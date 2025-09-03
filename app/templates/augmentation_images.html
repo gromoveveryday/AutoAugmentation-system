@@ -1,0 +1,135 @@
+<!-- templates/augmentation_images.html -->
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Аугментация изображений</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+
+        .labeled-fields {
+            margin-top: 15px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Аугментация изображений</h1>
+    <form method="POST">
+        <div class="form-group">
+            <label for="images_dir">Директория с изображениями:</label>
+            <input type="text" id="images_dir" name="images_dir" required>
+        </div>
+
+        <div class="form-group">
+            <label for="augmentation_dir">Директория для сохранения аугментированных изображений:</label>
+            <input type="text" id="augmentation_dir" name="augmentation_dir" required>
+        </div>
+
+        <div class="form-group">
+            <label>Изображения размечены?</label>
+            <div>
+                <input type="radio" id="labeled_yes" name="is_labeled" value="Да">
+                <label for="labeled_yes" style="display: inline;">Да</label>
+
+                <input type="radio" id="labeled_no" name="is_labeled" value="Нет" checked>
+                <label for="labeled_no" style="display: inline;">Нет</label>
+            </div>
+        </div>
+
+        <div id="labeled_fields" class="labeled-fields" style="display: none;">
+            <div class="form-group">
+                <label for="labels_dir">Директория с метками:</label>
+                <input type="text" id="labels_dir" name="labels_dir">
+            </div>
+
+            <div class="form-group">
+                <label for="dir_images_with_labels">Директория для изображений с метками:</label>
+                <input type="text" id="dir_images_with_labels" name="dir_images_with_labels">
+            </div>
+
+            <div class="form-group">
+                <label for="dir_with_new_labels">Директория для новых меток:</label>
+                <input type="text" id="dir_with_new_labels" name="dir_with_new_labels">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="n_samples">Количество образцов для аугментации:</label>
+            <input type="number" id="n_samples" name="n_samples" required>
+        </div>
+
+        <div class="form-group">
+            <label for="max_nfeatures_to_orb">Максимальное количество ключевых точек для расчета геометрической
+                аугументации (для выбора точек по умолчанию введите По умолчанию):</label>
+            <input type="text" id="max_nfeatures_to_orb" name="max_nfeatures_to_orb" required>
+        </div>
+
+        <button type="submit">Запустить аугментацию</button>
+    </form>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const labeledYes = document.getElementById('labeled_yes');
+            const labeledNo = document.getElementById('labeled_no');
+            const labeledFields = document.getElementById('labeled_fields');
+
+            function toggleLabeledFields() {
+                if (labeledYes.checked) {
+                    labeledFields.style.display = 'block';
+                } else {
+                    labeledFields.style.display = 'none';
+                }
+            }
+
+            labeledYes.addEventListener('change', toggleLabeledFields);
+            labeledNo.addEventListener('change', toggleLabeledFields);
+
+            // Инициализация при загрузке
+            toggleLabeledFields();
+        });
+    </script>
+</body>
+
+</html>
