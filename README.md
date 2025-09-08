@@ -40,7 +40,7 @@ pip install -r requirements.txt
 1. Запустить сервер:
 
 ```shell
-python app.py
+python app\app.py
 ```
 
 2. Перейти в браузере по адресу:
