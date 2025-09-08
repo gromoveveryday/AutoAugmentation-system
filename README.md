@@ -16,7 +16,7 @@ git clone https://github.com/gromoveveryday/AutoAugmentation-system.git
 ```
 
 ```shell
-cd AutoaAugmentation-system
+cd AutoAugmentation-system
 ```
 
 2. Создать и активировать виртуальное окружение:
