@@ -16,7 +16,7 @@ git clone https://github.com/gromoveveryday/AutoAugmentation-system.git
 ```
 
 ```shell
-cd AutoaAugmentation-system
+cd AutoAugmentation-system
 ```
 
 2. Создать и активировать виртуальное окружение:
@@ -40,7 +40,7 @@ pip install -r requirements.txt
 1. Запустить сервер:
 
 ```shell
-python app.py
+python app\app.py
 ```
 
 2. Перейти в браузере по адресу:
