@@ -1,12 +1,298 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
+
 <head>
-    <title>Аугментация временных рядов (в разработке)</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Аугментация временных рядов</title>
     <style>
-        body { font-family: Arial; margin: 40px; }
-        form { max-width: 500px; }
-        input, button { padding: 8px; margin: 5px 0; width: 100%; }
-        button { background: #4CAF50; color: white; border: none; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f8f9fa;
+        }
+        h1, h2 {
+            margin: 10px 0;
+            color: #333;
+        }
+        h1 { font-size: 28px; font-weight: bold; }
+        h2 { font-size: 20px; font-weight: 600; }
+
+        form { display: flex; gap: 10px; margin-bottom: 20px; padding: 15px; background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        input[type="text"], input[type="number"] { padding: 8px 10px; font-size: 14px; border: 2px solid #ddd; border-radius: 6px; flex: 1; box-sizing: border-box; }
+        button { padding: 8px 12px; font-size: 14px; background-color: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; transition: 0.3s; }
+        button:hover { background-color: #45a049; }
+
+        .main-content { display: flex; gap: 15px; align-items: flex-start; }
+        .data-section { flex: 0 0 80%; min-width: 0; }
+        .buttons-container { flex: 0 0 20%; display: flex; flex-direction: column; gap: 10px; }
+
+        .table-container { max-height: 250px; overflow: auto; border: 1px solid #ddd; border-radius: 6px; padding: 8px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        table.table, table.dataframe { border-collapse: collapse; width: 100%; font-size: 12px; min-width: 300px; }
+        table.table th, table.table td, table.dataframe th, table.dataframe td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; white-space: nowrap; }
+        table.table th, table.dataframe th { background: #f1f1f1; font-weight: bold; color: #333; position: sticky; top: 0; z-index: 2; }
+        table.table tr:hover, table.dataframe tr:hover { background-color: #f5f5f5; }
+
+        .error { color: #d32f2f; background: #ffebee; padding: 10px 12px; border-radius: 6px; border: 1px solid #f5c2c2; margin-bottom: 15px; font-size: 14px; }
+
+        .interpolation-menu, .noise-menu, .extrapolation-menu { display: none; background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 10px; width: 100%; box-shadow: 0 1px 3px rgba(0,0,0,0.15); margin-top: 5px; }
+        .interpolation-menu button, .noise-menu button, .extrapolation-menu button { width: 100%; margin-bottom: 5px; font-size: 13px; background-color: #4CAF50; color: white; }
+        .interpolation-menu button:hover, .noise-menu button:hover, .extrapolation-menu button:hover { background-color: #45a049; }
+
+        .menu-title { font-weight: bold; margin-bottom: 8px; color: #333; font-size: 14px; text-align: center; padding-bottom: 4px; border-bottom: 2px solid #4CAF50; }
+        .menu-grid { display: grid; grid-template-columns: 1fr; gap: 5px; }
+
+        .reset-button { background-color: #f44336; margin-bottom: 10px; }
+        .reset-button:hover { background-color: #d32f2f; }
+
+        /* area for plots */
+        .plots-wrapper { margin-top: 12px; background: #fff; padding: 12px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+        .plots-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+        #factor-select { padding: 6px 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 14px; }
+        .plot-column {display: flex; flex-direction: column; gap: 20px;}
+        .plot { min-height: 280px; }
+        @media (max-width: 900px) {
+            .main-content { flex-direction: column; }
+            .plot-row { grid-template-columns: 1fr; }
+        }
     </style>
+    <!-- Plotly CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
 </head>
+
+<body>
+<h1>Аугментация временных рядов</h1>
+
+<form method="POST">
+    <input type="text" id="csv_path" name="csv_path" required
+           value="{{ result.csv_path if result and result.csv_path }}" 
+           placeholder="Введите путь к CSV файлу">
+    <button type="submit">Загрузить данные</button>
+</form>
+
+{% if error %}
+<div class="error">
+    <strong>Ошибка:</strong> {{ error }}
+</div>
+{% endif %}
+
+{% if result and result.df_html %}
+<div class="main-content">
+    <div class="data-section">
+        <h2>Исходный ряд</h2>
+        <div class="table-container">
+            {{ result.df_html | safe }}
+        </div>
+        <!-- График исходного ряда -->
+         
+        <div class="plots-wrapper">
+            <div class="plots-controls">
+                <div style="font-weight:600;">Выберите фактор:</div>
+                <select id="factor-select"></select>
+            </div>
+            
+            <h3 style="margin:6px 0 8px 0;">
+                <div id="orig-plot" class="plot"></div>
+            
+            </div>
+
+        <h2>Статистика исходного ряда</h2>
+        <div class="table-container">
+            {{ result.stats_html | safe }}
+        </div>
+
+        <h2>Модифицированный ряд</h2>
+        <div class="table-container">
+            {% if result.modified_html %}
+                {{ result.modified_html | safe }}
+            {% endif %}
+        </div>
+
+        <h2>Статистика модифицированного ряда</h2>
+        <div class="table-container">
+            {% if result.modified_stats_html %}
+                {{ result.modified_stats_html | safe }}
+            {% endif %}
+        </div>
+
+         <div class="plots-wrapper">
+            <h3 style="margin:6px 0 8px 0;"></h3>
+            <div id="mod-plot" class="plot"></div>
+        </div>
+    </div>
+    <div class="buttons-container">
+        <form method="POST" action="{{ url_for('reset_data') }}">
+            <button type="submit" class="reset-button">Отменить изменения</button>
+        </form>
+
+        <!-- Интерполяция -->
+        <div class="menu-container">
+            <button class="augmentation-button" type="button" onclick="toggleMenu(this, 'interpolation-menu')">Интерполяция</button>
+            <div class="interpolation-menu" id="interpolation-menu">
+                <div class="menu-title">Методы интерполяции</div>
+                <div class="menu-grid">
+                    {% for method, label in [
+                        ('auto', 'Автоматическая'),
+                        ('linear', 'Линейная'),
+                        ('quadratic', 'Полиномиальная (2 порядок)'),
+                        ('cubic', 'Полиномиальная (3 порядок)'),
+                        ('nearest', 'Ближайший сосед'),
+                        ('spline2', 'Сплайн (2 порядок)'),
+                        ('spline3', 'Сплайн (3 порядок)'),
+                        ('pchip', 'Piecewise Cubic Hermite'),
+                        ('akima', 'Akima'),
+                        ('kalman', 'Калмановский фильтр')
+                    ] %}
+                    <form method="POST" action="{{ url_for('timeseries_action') }}">
+                        <input type="hidden" name="action" value="interpolate">
+                        <input type="hidden" name="method" value="{{ method }}">
+                        <button type="submit">{{ label }}</button>
+                    </form>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Экстраполяция -->
+        <div class="menu-container">
+            <button class="augmentation-button" type="button" onclick="toggleMenu(this, 'extrapolation-menu')">Экстраполяция/Ретрополяция</button>
+            <div class="extrapolation-menu" id="extrapolation-menu">
+                <div class="menu-title">Методы экстраполяции</div>
+                <div class="menu-grid">
+                    <form method="POST" action="{{ url_for('timeseries_action') }}">
+                        <input type="hidden" name="action" value="extrapolate">
+                        <button type="submit">Автоматическая экстраполяция</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Добавление шума -->
+        <div class="menu-container">
+            <button class="augmentation-button" type="button" onclick="toggleMenu(this, 'noise-menu')">Добавление шума</button>
+            <div class="noise-menu" id="noise-menu">
+                <div class="menu-title">Методы добавления шума</div>
+                <div class="menu-grid">
+                    {% for method, label in [
+                        ('jitter', 'Автоматическое добавление шума'),
+                        ('jitter_gauss', 'Гауссов шум'),
+                        ('jitter_normal', 'Шум с нормальным распределением'),
+                        ('jitter_outliers', 'Случайные выбросы'),
+                        ('jitter_multiplicative', 'Мультипликативный шум'),
+                        ('jitter_white', 'Шум белого спектра')
+                    ] %}
+                    <form method="POST" action="{{ url_for('timeseries_action') }}">
+                        <input type="hidden" name="action" value="jitter">
+                        <input type="hidden" name="method" value="{{ method }}">
+                        <button type="submit">{{ label }}</button>
+                    </form>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endif %}
+
+<script>
+    function toggleMenu(button, menuId) {
+        const menu = document.getElementById(menuId);
+        document.querySelectorAll('.interpolation-menu, .noise-menu, .extrapolation-menu').forEach(m => {
+            if (m !== menu) m.style.display = 'none';
+        });
+        menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
+    }
+
+    document.addEventListener('click', function(event) {
+        if (!event.target.closest('.menu-container')) {
+            document.querySelectorAll('.interpolation-menu, .noise-menu, .extrapolation-menu').forEach(menu => {
+                menu.style.display = 'none';
+            });
+        }
+    });
+
+    // --- Plotly integration ---
+    (function() {
+        // Получаем данные переданные из Flask
+        const dfData = {{ result.df_json | default({}) | tojson | safe }};
+        const modData = {{ result.modified_json | default({}) | tojson | safe }};
+        const columns = {{ result.columns | default([]) | tojson | safe }};
+        const indices = {{ result.indices | default([]) | tojson | safe }};
+
+
+        const factorSelect = document.getElementById('factor-select');
+
+        // Заполняем селект индексами (факторами)
+        function populateFactorSelect() {
+            factorSelect.innerHTML = '';
+            indices.forEach((idx, i) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.text = idx;
+                factorSelect.appendChild(opt);
+            });
+            // default — первый фактор, если есть
+            if (indices.length > 0) factorSelect.value = indices[0];
+        }
+
+        function drawPlots(selectedFactor) {
+            // Защита: если нет данных — ничего не рисуем
+            if (!selectedFactor) return;
+
+            const origY = (dfData[selectedFactor] !== undefined) ? dfData[selectedFactor] : [];
+            const modY = (modData[selectedFactor] !== undefined) ? modData[selectedFactor] : [];
+
+            // Подготовка трейсa для исходного ряда
+            const traceOrig = {
+                x: columns,
+                y: origY,
+                name: selectedFactor,
+                mode: 'lines+markers',
+                hovertemplate: '%{x}: %{y}<extra>Исходный</extra>'
+            };
+
+            const layoutOrig = {
+                margin: { t: 30, r: 10, l: 40, b: 40 },
+                xaxis: { title: 'Временной интервал' },
+                yaxis: { title: 'Значение признака' },
+                showlegend: false
+            };
+
+            Plotly.react('orig-plot', [traceOrig], layoutOrig, {responsive: true});
+
+            // Модифицированный ряд
+            const traceMod = {
+                x: columns,
+                y: modY,
+                name: selectedFactor,
+                mode: 'lines+markers',
+                hovertemplate: '%{x}: %{y}<extra>Модифицированный</extra>'
+            };
+
+            const layoutMod = {
+                margin: { t: 30, r: 10, l: 40, b: 40 },
+                xaxis: { title: 'Временной интервал' },
+                yaxis: { title: 'Значение признака' },
+                showlegend: false
+            };
+
+            Plotly.react('mod-plot', [traceMod], layoutMod, {responsive: true});
+        }
+
+        // Инициализация
+        populateFactorSelect();
+        if (indices.length > 0) {
+            drawPlots(indices[0]);
+        }
+
+        // Смена фактора
+        factorSelect.addEventListener('change', function(e) {
+            drawPlots(e.target.value);
+        });
+
+        // Если на странице применяются преобразования (постback), то шаблон уже передал обновленные JSON — мы их используем выше.
+    })();
+</script>
+</body>
 </html>

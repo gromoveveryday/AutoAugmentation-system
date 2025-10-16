@@ -50,6 +50,7 @@ packaging==24.2
 urllib3==2.3.0
 joblib==1.4.2
 python-dateutil==2.9.0.post0
+plotly==6.3.1
 tifffile==2024.12.12
 tzdata==2024.2
 imageio==2.36.1
