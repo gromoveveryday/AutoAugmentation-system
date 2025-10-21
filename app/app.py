@@ -12,10 +12,6 @@ TEMP_MODIFIED_PATH = os.path.join(tempfile.gettempdir(), "timeseries_modified.js
 
 
 def _df_to_index_lists(df: pd.DataFrame):
-    """
-    Возвращает структуру {index_name: [values...]} и список колонок (x-axis labels) и список индексов.
-    None используется для NaN чтобы JS корректно отобразил пропуски.
-    """
     out = {}
     for idx in df.index:
         # приводим к списку и заменяем NaN на None
