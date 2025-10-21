@@ -72,8 +72,6 @@ def augmentation_timeseries():
                 error = str(e)
 
     return render_template("augmentation_timeseries.html", result=result, error=error)
-
-
 @app.route("/timeseries_action", methods=["POST"])
 def timeseries_action():
     error = None
@@ -84,11 +82,20 @@ def timeseries_action():
 
         action = request.form.get("action")
         method = request.form.get("method", "linear")
+        periods = int(request.form.get("periods", 10))  # <-- получаем из формы
 
         augmenter = AutoAugmentationTimeseries(df_input)
-        df_modified_new, html_dict = augmenter.apply_action(df_input, df_modified, action, method)
 
-        # Сохраняем новое состояние
+        # Передаем periods в метод экстраполяции
+        if action == "extrapolate":
+            df_modified_new, html_dict = augmenter.apply_action(
+                df_input, df_modified, action, method, periods=periods
+            )
+        else:
+            df_modified_new, html_dict = augmenter.apply_action(
+                df_input, df_modified, action, method
+            )
+
         df_modified_new.to_json(TEMP_MODIFIED_PATH)
 
         # Формируем result
@@ -96,7 +103,6 @@ def timeseries_action():
             augmenter.calculate_statistics(df_input), orient='index'
         ).to_html(classes="table table-sm", border=0, na_rep="NaN")
 
-        # JSON-структуры для JS
         df_json, cols, idxs = _df_to_index_lists(df_input)
         modified_json, _, _ = _df_to_index_lists(df_modified_new)
 
@@ -116,6 +122,7 @@ def timeseries_action():
         error = str(e)
 
     return render_template("augmentation_timeseries.html", result=result, error=error)
+
 
 
 @app.route("/timeseries_reset", methods=["POST"])

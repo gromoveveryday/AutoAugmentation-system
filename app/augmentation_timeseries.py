@@ -5,14 +5,68 @@ from scipy.interpolate import PchipInterpolator, Akima1DInterpolator
 from statsmodels.tsa.stattools import adfuller
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 import warnings
 import os
 import time
 
 warnings.filterwarnings("ignore")
 
+class TimeGAN(nn.Module):
+    def __init__(self, input_dim, hidden_dim=24, num_layers=3, device=None):
+        super(TimeGAN, self).__init__()
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+        self.embedder = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.recovery = nn.LSTM(hidden_dim, input_dim, num_layers, batch_first=True)
+
+        self.generator = nn.LSTM(hidden_dim, hidden_dim, num_layers, batch_first=True)
+        self.supervisor = nn.LSTM(hidden_dim, hidden_dim, num_layers - 1, batch_first=True)
+
+        self.discriminator_lstm = nn.LSTM(hidden_dim, hidden_dim, num_layers, batch_first=True)
+        self.discriminator_linear = nn.Linear(hidden_dim, 1)
+        self.discriminator_sigmoid = nn.Sigmoid()
+        
+        self.hidden_dim = hidden_dim
+        self.to(self.device)
+
+    def embed(self, x):
+        h, _ = self.embedder(x)
+        return h
+
+    def recover(self, h):
+        x_tilde, _ = self.recovery(h)
+        return x_tilde
+    
+    def discriminator(self, h):
+        lstm_out, _ = self.discriminator_lstm(h)  
+        linear_out = self.discriminator_linear(lstm_out)
+        return self.discriminator_sigmoid(linear_out)
+
+    def generate(self, n_series=1, seq_len=10):
+        z = torch.randn((n_series, seq_len, self.hidden_dim)).to(self.device)
+        g_h, _ = self.generator(z)
+        s_h, _ = self.supervisor(g_h)
+        x_fake, _ = self.recovery(s_h)
+        return x_fake.detach().cpu().numpy()
+
+    def fit(self, data, epochs=500, batch_size=32, pretrain_steps=200):
+        data = torch.tensor(data, dtype=torch.float32, device=self.device)
+
+        optimizer_auto = torch.optim.Adam(list(self.embedder.parameters()) + list(self.recovery.parameters()), lr=1e-3)
+        optimizer_gan = torch.optim.Adam(self.parameters(), lr=1e-3)
+
+        mse = nn.MSELoss()
+        bce = nn.BCELoss()
+
+        for step in range(pretrain_steps):
+            optimizer_auto.zero_grad()
+            h = self.embed(data)
+            x_tilde = self.recover(h)
+            loss = mse(x_tilde, data)
+            loss.backward()
+            optimizer_auto.step()
+            if step % 50 == 0:
+                print(f"Шаг предобучения {step}/{pretrain_steps}, Лоссы={loss.item():.4f}")
 class AutoAugmentationTimeseries:
     def __init__(self, df_or_path: Union[pd.DataFrame, str]):
         if isinstance(df_or_path, pd.DataFrame):
@@ -32,161 +86,91 @@ class AutoAugmentationTimeseries:
         self.n_missing_total: Optional[int] = None
         self.df_updated: Optional[pd.DataFrame] = None
         self.model = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def extrapolate_auto(self, df: pd.DataFrame, epochs: int = 200, hidden_dim: int = 32, # https://arxiv.org/pdf/2309.04732 - отсюда
-                         num_layers: int = 2, batch_size: int = 16, rng_seed: int = None) -> pd.DataFrame:
-   
-        if rng_seed is not None:
-            np.random.seed(rng_seed)
-            torch.manual_seed(rng_seed)
+    def fit_timegan(self, df, hidden_dim=24, num_layers=3, batch_size=32, epochs=500, pretrain_steps=200):
+        df_clean = df.dropna().copy()
+        if df_clean.empty:
+            raise ValueError("После удаления NaN нет данных для обучения TimeGAN.")
+        
+        x = df_clean.values.reshape(1, df_clean.shape[0], df_clean.shape[1])
+        x_norm = self._normalize(x)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        df_num = df.apply(pd.to_numeric, errors="coerce").copy()
-        n_rows, n_cols = df_num.shape
-        df_filled = df_num.copy()
+        self.model = TimeGAN(
+            input_dim=df_clean.shape[1],
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            device=self.device
+        )
+        self.model.fit(x_norm, epochs=epochs, batch_size=batch_size, pretrain_steps=pretrain_steps)
+    
+    def _normalize(self, x: np.ndarray) -> np.ndarray:
+        x_min = np.nanmin(x, axis=1, keepdims=True)
+        x_max = np.nanmax(x, axis=1, keepdims=True)
+        diff = x_max - x_min
+        diff[diff == 0] = 1e-8  # защита от деления на 0
+        x_norm = (x - x_min) / diff
+        x_norm = np.nan_to_num(x_norm, nan=0.0, posinf=0.0, neginf=0.0)
+        return x_norm
 
-        valid_rows = df_num.dropna(how="all")
-        if valid_rows.empty:
-            print("Нет валидных данных для экстраполяции")
-            return df
+    def _denormalize(self, x_norm: np.ndarray, x_original: np.ndarray = None) -> np.ndarray:
+        if x_original is None:
+            x_original = self.df_input.values.reshape(1, self.df_input.shape[0], self.df_input.shape[1])
+        x_min = np.nanmin(x_original, axis=1, keepdims=True)
+        x_max = np.nanmax(x_original, axis=1, keepdims=True)
+        x = x_norm * (x_max - x_min + 1e-8) + x_min
+        return x
+    
+    def extrapolate_timegan(self, periods=10, mode="forward"):
+        model = self.model
+        model.eval()
 
-        data_array = valid_rows.to_numpy(dtype=np.float32)
-        mean_cols = np.nanmean(data_array, axis=0)
-        std_cols = np.nanstd(data_array, axis=0)
-        std_cols[std_cols == 0] = 1.0
-        norm_data = (data_array - mean_cols) / std_cols
-        norm_data[np.isnan(norm_data)] = 0.0
+        x = self.df_input.values
+        x = x.reshape(1, x.shape[0], x.shape[1])
+        x_norm = torch.tensor(self._normalize(x), dtype=torch.float32, device=self.device)
 
-        seq_len = norm_data.shape[1]
-        dataset = TensorDataset(torch.tensor(norm_data).unsqueeze(1))
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-        # Компоненты TimeGAN
-        class Embedder(nn.Module):
-            def __init__(self, input_dim, hidden_dim):
-                super().__init__()
-                self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
-                self.out = nn.Linear(hidden_dim, hidden_dim)
-            def forward(self, x):
-                h, _ = self.gru(x)
-                return torch.tanh(self.out(h))
-
-        class Recovery(nn.Module):
-            def __init__(self, hidden_dim, output_dim):
-                super().__init__()
-                self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-                self.out = nn.Linear(hidden_dim, output_dim)
-            def forward(self, h):
-                h, _ = self.gru(h)
-                return self.out(h)
-
-        class Generator(nn.Module):
-            def __init__(self, hidden_dim, z_dim):
-                super().__init__()
-                self.gru = nn.GRU(z_dim, hidden_dim, batch_first=True)
-                self.out = nn.Linear(hidden_dim, hidden_dim)
-            def forward(self, z):
-                h, _ = self.gru(z)
-                return torch.tanh(self.out(h))
-
-        class Supervisor(nn.Module):
-            def __init__(self, hidden_dim):
-                super().__init__()
-                self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-                self.out = nn.Linear(hidden_dim, hidden_dim)
-            def forward(self, h):
-                h, _ = self.gru(h)
-                return torch.tanh(self.out(h))
-
-        class Discriminator(nn.Module):
-            def __init__(self, hidden_dim):
-                super().__init__()
-                self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-                self.out = nn.Linear(hidden_dim, 1)
-            def forward(self, h):
-                h, _ = self.gru(h)
-                return torch.sigmoid(self.out(h))
-
-        # Инициализация
-        embedder = Embedder(n_cols, hidden_dim).to(device)
-        recovery = Recovery(hidden_dim, n_cols).to(device)
-        generator = Generator(hidden_dim, hidden_dim).to(device)
-        supervisor = Supervisor(hidden_dim).to(device)
-        discriminator = Discriminator(hidden_dim).to(device)
-
-        optim_E = torch.optim.Adam(embedder.parameters(), lr=1e-3)
-        optim_R = torch.optim.Adam(recovery.parameters(), lr=1e-3)
-        optim_G = torch.optim.Adam(list(generator.parameters()) + list(supervisor.parameters()), lr=1e-3)
-        optim_D = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
-        mse = nn.MSELoss()
-
-        # Этап 1: автоэнкодер
-        for epoch in range(epochs // 3):
-            for (batch,) in dataloader:
-                batch = batch.to(device)
-                H = embedder(batch)
-                X_tilde = recovery(H)
-                loss = mse(batch, X_tilde)
-                optim_E.zero_grad(); optim_R.zero_grad()
-                loss.backward(); optim_E.step(); optim_R.step()
-
-        # Этап 2: супервизор
-        for epoch in range(epochs // 3):
-            for (batch,) in dataloader:
-                batch = batch.to(device)
-                H = embedder(batch)
-                H_hat_supervise = supervisor(H)
-                loss_s = mse(H[:, 1:, :], H_hat_supervise[:, :-1, :])
-                optim_G.zero_grad(); loss_s.backward(); optim_G.step()
-
-        # Этап 3: совместное обучение
-        for epoch in range(epochs // 3, epochs):
-            for (batch,) in dataloader:
-                batch = batch.to(device)
-                H = embedder(batch)
-                Z = torch.randn_like(H).to(device)
-                E_hat = generator(Z)
-                H_hat = supervisor(E_hat)
-                X_hat = recovery(H_hat)
-
-                # дискриминатор
-                y_real = discriminator(H)
-                y_fake = discriminator(H_hat.detach())
-                loss_D = -torch.mean(torch.log(y_real + 1e-8) + torch.log(1 - y_fake + 1e-8))
-                optim_D.zero_grad(); loss_D.backward(); optim_D.step()
-
-                # генератор
-                y_fake_g = discriminator(H_hat)
-                loss_G = torch.mean(torch.log(y_fake_g + 1e-8))
-                loss_G += mse(batch, X_hat)
-                optim_G.zero_grad(); loss_G.backward(); optim_G.step()
-
-        # Генерация экстраполяций
-        embedder.eval(); recovery.eval(); generator.eval(); supervisor.eval()
         with torch.no_grad():
-            for r_idx, row in df_num.iterrows():
-                s = row.to_numpy(dtype=np.float32)
-                mask = ~np.isnan(s)
-                if mask.sum() == 0:
-                    continue
+            h = model.embed(x_norm)
 
-                s_norm = (s - mean_cols) / std_cols
-                s_norm[np.isnan(s_norm)] = 0.0
-                seq = torch.tensor(s_norm, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+            if mode == "forward":
+                h_last = h[:, -1:, :]
+                z_future = h_last.repeat(1, periods, 1) + 0.01 * torch.randn((1, periods, h.shape[-1]), device=self.device)
+                h_future = model.supervisor(model.generator(z_future)[0])[0]  # генератор + супервизор
+                x_future = model.recover(h_future)
+                x_future = self._denormalize(x_future.cpu().numpy())[0]
+                df_future = pd.DataFrame(x_future, columns=self.df_input.columns)
+                df_update = pd.concat([pd.DataFrame(x[0], columns=self.df_input.columns), df_future], ignore_index=True)
 
-                H = embedder(seq)
-                Z = torch.randn_like(H).to(device)
-                H_gen = supervisor(generator(Z))
-                X_gen = recovery(H_gen).squeeze().cpu().numpy()
-                X_gen = X_gen * std_cols + mean_cols
+            elif mode == "backward":
+                h_first = h[:, :1, :]
+                z_past = h_first.repeat(1, periods, 1) + 0.01 * torch.randn((1, periods, h.shape[-1]), device=self.device)
+                h_past = model.supervisor(model.generator(z_past)[0])[0]
+                x_past = model.recover(h_past)
+                x_past = self._denormalize(x_past.cpu().numpy())[0]
+                df_past = pd.DataFrame(x_past, columns=self.df_input.columns)
+                df_update = pd.concat([df_past, pd.DataFrame(x[0], columns=self.df_input.columns)], ignore_index=True)
 
-                s[np.isnan(s)] = X_gen[np.isnan(s)]
-                df_filled.loc[r_idx] = s
+            elif mode == "both":
+                half = periods // 2
+                h_first = h[:, :1, :]
+                z_past = h_first.repeat(1, half, 1) + 0.01 * torch.randn((1, half, h.shape[-1]), device=self.device)
+                h_past = model.supervisor(model.generator(z_past)[0])[0]
+                x_past = model.recover(h_past)
+                x_past = self._denormalize(x_past.cpu().numpy())[0]
+                df_past = pd.DataFrame(x_past, columns=self.df_input.columns)
 
-        self.df_updated = df_filled.copy()
-        print("Экстраполяция выполнена с помощью TimeGAN")
-        return df_filled
+                h_last = h[:, -1:, :]
+                z_future = h_last.repeat(1, periods - half, 1) + 0.01 * torch.randn((1, periods - half, h.shape[-1]), device=self.device)
+                h_future = model.supervisor(model.generator(z_future)[0])[0]
+                x_future = model.recover(h_future)
+                x_future = self._denormalize(x_future.cpu().numpy())[0]
+                df_future = pd.DataFrame(x_future, columns=self.df_input.columns)
 
+                df_update = pd.concat([df_past, pd.DataFrame(x[0], columns=self.df_input.columns), df_future], ignore_index=True)
+
+        self.df_updated = df_update
+        return df_update
+    
     @staticmethod
     def _check_stationarity(series: pd.Series) -> Dict[str, Optional[Union[str, float]]]:
         series_clean = series.dropna()
@@ -683,7 +667,7 @@ class AutoAugmentationTimeseries:
             }
         return stats_all
 
-    def apply_action(self, df_input: pd.DataFrame, df_modified: pd.DataFrame, action: str, method: str):
+    def apply_action(self, df_input: pd.DataFrame, df_modified: pd.DataFrame, action: str, method: str, periods=None):
    
         result_html = {}
         if action == "interpolate":
@@ -711,7 +695,16 @@ class AutoAugmentationTimeseries:
             self.df_updated = df_modified.copy()
 
         elif action == "extrapolate":
-            df_modified = self.extrapolate_auto(df_modified.copy())
+            mode_map = {
+            "Экстраполяция": "forward",
+            "Ретрополяция": "backward",
+            "Комбинированная экстраполяция": "both"
+            }
+            mode = mode_map.get(method, "forward")
+
+            if self.model is None:
+                self.fit_timegan(df_input)
+            df_modified = self.extrapolate_timegan(periods=periods, mode=mode)
             self.df_updated = df_modified.copy()
 
         stats_df = pd.DataFrame.from_dict(self.calculate_statistics_modified(df_modified), orient='index')

@@ -71,3 +71,4 @@ termcolor==2.5.0
 piq==0.8.0
 torch==2.7.1
 torchvision==0.22.1
+statsmodels==0.14.5
