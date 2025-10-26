@@ -30,6 +30,7 @@ class AutoAugmentationTimeseries:
         self.n_missing_total: Optional[int] = None
         self.df_updated: Optional[pd.DataFrame] = None
         self.model = None
+        self.pred_len = 30
         self.timegan_model = None
         self.scaler = None
         self.seq_len = 30
@@ -41,14 +42,14 @@ class AutoAugmentationTimeseries:
         self.batch_size = 32
         self.alpha_teacher = 0.7
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.direction='forward'
+        self.direction=None
         torch.manual_seed(42)
         np.random.seed(42)
         self.df_input.columns = pd.to_datetime(self.df_input.columns)
         self.df_updated = self.df_input
         self.counter = 0
 
-    def fit_timegan(self, pred_len=30):
+    def fit_timegan(self):
         df = self.df_updated.T
         df.index = pd.to_datetime(df.index)
 
@@ -191,7 +192,7 @@ class AutoAugmentationTimeseries:
 
         self.model = (embedder, recovery, generator, supervisor, discriminator)
     
-    def _extend_datetime_index(self, pred_len=30):
+    def _extend_datetime_index(self):
         if not isinstance(self.df_updated.T.index, pd.DatetimeIndex) or len(self.df_updated.T.index) < 2:
             raise ValueError("Индекс должен быть DatetimeIndex с >=2 элементов")
 
@@ -201,25 +202,25 @@ class AutoAugmentationTimeseries:
         # Forward индексы
         if self.direction in ["forward", "both"]:
             last_idx = df_extended.index[-1]
-            n_forward = pred_len if self.direction == "forward" else pred_len // 2 + pred_len % 2
-            forward_idx = [last_idx + step*(i+1) for i in range(n_forward)]
+            self.n_forward = self.pred_len if self.direction == "forward" else self.pred_len // 2 + self.pred_len % 2
+            self.forward_idx = [last_idx + step*(i+1) for i in range(int(self.n_forward))]
         else:
-            forward_idx = []
+            self.forward_idx = []
 
         # Backward индексы
         if self.direction in ["backward", "both"]:
             first_idx = df_extended.index[0]
-            n_backward = pred_len if self.direction == "backward" else pred_len // 2
-            backward_idx = [first_idx - step*(i+1) for i in reversed(range(n_backward))]
+            self.n_backward = self.pred_len if self.direction == "backward" else self.pred_len // 2
+            self.backward_idx = [first_idx - step*(i+1) for i in reversed(range(int(self.n_backward)))]
         else:
-            backward_idx = []
+            self.backward_idx = []
 
         # Расширяем df, чтобы можно было вставить прогнозы
-        for idx in backward_idx + forward_idx:
+        for idx in self.backward_idx + self.forward_idx:
             if idx not in df_extended.index:
                 df_extended.loc[idx] = np.nan
 
-        return df_extended, forward_idx, backward_idx
+        return df_extended, self.forward_idx, self.backward_idx
 
     def predict_timegan(self, **kwargs):
         if self.model is None:
@@ -228,17 +229,17 @@ class AutoAugmentationTimeseries:
         embedder, recovery, generator, supervisor, _ = self.model
         embedder.eval(); recovery.eval(); generator.eval(); supervisor.eval()
 
-        df_extended, forward_idx, backward_idx = self._extend_datetime_index()
+        df_extended, self.forward_idx, self.backward_idx = self._extend_datetime_index()
         n_features = self.data_tensor.shape[1]
 
         with torch.no_grad():
             # Прогноз назад
             backward_arr = []
-            if backward_idx:
+            if self.backward_idx:
                 last_seq = self.data_tensor[:self.seq_len].unsqueeze(0)
                 H_last = embedder(last_seq)
                 next_hidden = H_last[:, :1, :]
-                for _ in range(len(backward_idx)):
+                for _ in range(len(self.backward_idx)):
                     z = torch.randn(next_hidden.shape, device=self.device)
                     h_next = generator(z)
                     next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
@@ -250,11 +251,11 @@ class AutoAugmentationTimeseries:
 
             # Прогноз вперёд
             forward_arr = []
-            if forward_idx:
+            if self.forward_idx:
                 last_seq = self.data_tensor[-self.seq_len:].unsqueeze(0)
                 H_last = embedder(last_seq)
                 next_hidden = H_last[:, -1:, :]
-                for _ in range(len(forward_idx)):
+                for _ in range(len(self.forward_idx)):
                     z = torch.randn(next_hidden.shape, device=self.device)
                     h_next = generator(z)
                     next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
@@ -269,8 +270,10 @@ class AutoAugmentationTimeseries:
             generated_original = self.scaler.inverse_transform(generated)
 
         # Заполняем расширенный df
-        df_extended.loc[backward_idx + forward_idx] = generated_original
-        self.df_updated = df_extended.T.copy()
+        df_extended.loc[self.backward_idx + self.forward_idx] = generated_original
+        self.df_updated = df_extended.sort_index().T.copy()
+        df_scaled_new = self.scaler.fit_transform(self.df_updated.T.values)
+        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device)
         return self.df_updated
   
     @staticmethod
@@ -806,6 +809,7 @@ class AutoAugmentationTimeseries:
                 self.counter += 1
                 self.fit_timegan(**kwargs)
             
+            self.direction = method
             df_modified = self.predict_timegan(**kwargs)
             self.df_updated = df_modified.copy()
 

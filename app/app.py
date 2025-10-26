@@ -31,8 +31,8 @@ def save_initial_state(csv_path):
         .to_html(classes="table table-sm", border=0, na_rep="NaN")
 
     # сохраняем во временные файлы
-    df_input.to_json(TEMP_INPUT_PATH)
-    df_input.to_json(TEMP_MODIFIED_PATH)
+    df_input.to_json(TEMP_INPUT_PATH,  orient="split")
+    df_input.to_json(TEMP_MODIFIED_PATH,  orient="split")
 
     # JSON-представление для JS (index -> list of values), колонки и список индексов
     df_json, cols, idxs = _df_to_index_lists(df_input)
@@ -77,8 +77,8 @@ def timeseries_action():
     error = None
     result = {}
     try:
-        df_input = pd.read_json(TEMP_INPUT_PATH)
-        df_modified = pd.read_json(TEMP_MODIFIED_PATH)
+        df_input = pd.read_json(TEMP_INPUT_PATH,  orient="split")
+        df_modified = pd.read_json(TEMP_MODIFIED_PATH,  orient="split")
 
         action = request.form.get("action")
         method = request.form.get("method", "linear")
@@ -93,20 +93,20 @@ def timeseries_action():
             # обновляем данные, но сохраняем уже обученную модель
             timegan_augmenter.df_input = df_input
             timegan_augmenter.df_updated = df_modified.copy()
+            timegan_augmenter.pred_len = pred_len
 
         # выполняем действие (интерполяция, экстраполяция и т.д.)
         df_modified_new, html_dict = timegan_augmenter.apply_action(
             timegan_augmenter.df_input,
             timegan_augmenter.df_updated,
             action,
-            method,
-            pred_len=pred_len
+            method
         )
         # обновляем внутреннее состояние
         timegan_augmenter.df_updated = df_modified_new.copy()
 
         # сохраняем изменённый датафрейм во временный файл
-        df_modified_new.to_json(TEMP_MODIFIED_PATH)
+        df_modified_new.to_json(TEMP_MODIFIED_PATH,  orient="split")
 
         # статистики
         stats_df = pd.DataFrame.from_dict(
@@ -150,9 +150,9 @@ def reset_data():
     error = None
     result = {}
     try:
-        df_input = pd.read_json(TEMP_INPUT_PATH)
+        df_input = pd.read_json(TEMP_INPUT_PATH,  orient="split")
         df_modified = df_input.copy()
-        df_modified.to_json(TEMP_MODIFIED_PATH)
+        df_modified.to_json(TEMP_MODIFIED_PATH,  orient="split")
 
         augmenter = AutoAugmentationTimeseries(df_modified)
         stats_html = pd.DataFrame.from_dict(augmenter.calculate_statistics(df_modified), orient='index') \
