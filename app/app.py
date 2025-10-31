@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, send_file
 from augmentation_images import autoaugmentation_images
 from augmentation_timeseries import AutoAugmentationTimeseries
 import pandas as pd
@@ -183,32 +183,112 @@ def main():
 
 @app.route("/images", methods=["GET", "POST"])
 def augmentation_images_route():
-    global output_name
+    global output_name, zip_file_path
+
+    output_name = None
+    zip_file_path = None
+    form_data = request.form.to_dict() if request.method == "POST" else {}
+
     if request.method == "POST":
-        images_dir = request.form["images_dir"]
-        augmentation_dir = request.form["augmentation_dir"]
-        n_samples = int(request.form["n_samples"])
-        max_nfeatures_to_orb = str(request.form["max_nfeatures_to_orb"])
-        is_labeled = request.form.get("is_labeled", "Нет") == "Да"
-        labels_dir = request.form.get("labels_dir", "not_specified")
-        dir_images_with_labels = request.form.get("dir_images_with_labels", "not_specified")
-        dir_with_new_labels = request.form.get("dir_with_new_labels", "not_specified")
+        uploaded_images = request.files.getlist("images")
+        uploaded_labels = request.files.getlist("labels") if "labels" in request.files else []
+        n_samples = int(form_data.get("n_samples", 0))
+        max_nfeatures_to_orb = str(form_data.get("max_nfeatures_to_orb", "По умолчанию"))
+        is_labeled = form_data.get("is_labeled", "Нет") == "Да"
+        bins = int(form_data.get("bins", 32))
+        min_n_clusters = int(form_data.get("min_n_clusters", 5))
+        min_crop_ratio = float(form_data.get("min_crop_ratio", 0.8))
+        max_crop_ratio = float(form_data.get("max_crop_ratio", 0.95))
+        min_zoom_factor = float(form_data.get("min_zoom_factor", 1.05))
+        max_zoom_factor = float(form_data.get("max_zoom_factor", 1.4))
+        min_h_shift = int(form_data.get("min_h_shift", 5))
+        max_h_shift = int(form_data.get("max_h_shift", 30))
+        min_s_scale = float(form_data.get("min_s_scale", 0.8))
+        max_s_scale = float(form_data.get("max_s_scale", 1.5))
+        min_v_scale = float(form_data.get("min_v_scale", 0.7))
+        max_v_scale = float(form_data.get("max_v_scale", 1.4))
+        min_bits = int(form_data.get("min_bits", 3))
+        max_bits = int(form_data.get("max_bits", 6))
+        base_bits = int(form_data.get("base_bits", 8))
+        salt_vs_pepper = float(form_data.get("salt_vs_pepper", 0.5))
+        mean_gaussian_noise = int(form_data.get("mean_gaussian_noise", 0))
+        std_gaussian_noise = int(form_data.get("std_gaussian_noise", 25))
+        min_amount = float(form_data.get("min_amount", 0.01))
+        max_amount = float(form_data.get("max_amount", 0.15))
+        min_alpha = float(form_data.get("min_alpha", 0.3))
+        max_alpha = float(form_data.get("max_alpha", 0.7))
+        max_inter_ration = float(form_data.get("max_inter_ration", 0.4))
+        alpha_for_cutmix = float(form_data.get("alpha_for_cutmix", 0.5))
+        calculate_geometric = 1 if "calculate_geometric" in form_data else 0
+        calculate_color = 1 if "calculate_color" in form_data else 0
+        calculate_noise = 1 if "calculate_noise" in form_data else 0
+        calculate_mix = 1 if "calculate_mix" in form_data else 0
+
+        if not uploaded_images:
+            output_name = "Ошибка: необходимо загрузить хотя бы одно изображение"
+            return render_template("augmentation_images.html", form_data=form_data, output_name=output_name)
 
         augmenter = autoaugmentation_images(
-            images_dir=images_dir,
-            augumentation_dir=augmentation_dir,
-            labels_dir=labels_dir if is_labeled else None,
+            uploaded_images=uploaded_images,
+            uploaded_labels=uploaded_labels if is_labeled and uploaded_labels else [],
             n_samples_to_augument=n_samples,
             max_nfeatures_to_orb=max_nfeatures_to_orb,
-            dir_images_with_labels=dir_images_with_labels if is_labeled else None,
-            dir_with_new_labels=dir_with_new_labels if is_labeled else None,
-            is_labeled=is_labeled
+            is_labeled=is_labeled,
+            calculate_geometric=calculate_geometric,
+            calculate_color=calculate_color,
+            calculate_noise=calculate_noise,
+            calculate_mix=calculate_mix,
+            bins=bins,
+            min_n_clusters=min_n_clusters,
+            min_crop_ratio=min_crop_ratio,
+            max_crop_ratio=max_crop_ratio,
+            min_zoom_factor=min_zoom_factor,
+            max_zoom_factor=max_zoom_factor,
+            min_h_shift=min_h_shift,
+            max_h_shift=max_h_shift,
+            min_s_scale=min_s_scale,
+            max_s_scale=max_s_scale,
+            min_v_scale=min_v_scale,
+            max_v_scale=max_v_scale,
+            min_bits=min_bits,
+            max_bits=max_bits,
+            base_bits=base_bits,
+            salt_vs_pepper=salt_vs_pepper,
+            mean_gaussian_noise=mean_gaussian_noise,
+            std_gaussian_noise=std_gaussian_noise,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            min_alpha=min_alpha,
+            max_alpha=max_alpha,
+            max_inter_ration=max_inter_ration,
+            alpha_for_cutmix=alpha_for_cutmix
         )
+        
         augmenter.run_pipeline()
         output_name = augmenter.output_name
-        return redirect(url_for("result"))
-    return render_template("augmentation_images.html")
+        zip_file_path = getattr(augmenter, 'zip_file_path', None)
+        # return redirect(url_for("result"))
+        return render_template(
+            "augmentation_images.html",
+            form_data=form_data,
+            output_name=output_name,
+            zip_file_path=zip_file_path
+            )
+    
+    return render_template("augmentation_images.html", form_data=form_data, output_name=output_name, zip_file_path=None)
 
+@app.route("/download_zip")
+def download_zip():
+    zip_filename = request.args.get('filename')
+    if zip_filename:
+        # Ищем файл в папке downloads
+        zip_path = os.path.join(os.getcwd(), "downloads", zip_filename)
+        if os.path.exists(zip_path):
+            try:
+                return send_file(zip_path, as_attachment=True, download_name=zip_filename)
+            except Exception as e:
+                return f"Ошибка при загрузке файла: {str(e)}", 500
+    return "Файл не найден", 404
 
 @app.route("/videos")
 def augmentation_videos():

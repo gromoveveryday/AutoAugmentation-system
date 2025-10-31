@@ -1,135 +1,294 @@
-<!-- templates/augmentation_images.html -->
 <!DOCTYPE html>
 <html lang="ru">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Аугментация изображений</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-
-        input[type="text"],
-        input[type="number"] {
-            width: 100%;
-            padding: 8px;
-            box-sizing: border-box;
-        }
-
-        .labeled-fields {
-            margin-top: 15px;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
-
-        button {
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background-color: #45a049;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Аугментация изображений</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+.container { display: flex; gap: 30px; }
+.left-column { flex: 1; }
+.right-column { flex: 1; }
+.form-group { margin-bottom: 15px; }
+label { display: block; margin-bottom: 5px; font-weight: bold; }
+input[type="text"], input[type="number"], input[type="file"] { width: 100%; padding: 8px; box-sizing: border-box; }
+.labeled-fields { margin-top: 15px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+.advanced-section { margin-top: 25px; padding: 20px; border: 2px solid #4CAF50; border-radius: 8px; background-color: #f8fff8; }
+.section-title { font-size: 18px; font-weight: bold; color: #2c5f2d; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid #4CAF50; }
+.param-group { margin-bottom: 12px; }
+.param-label { font-size: 14px; margin-bottom: 3px; }
+.param-input { width: 100%; padding: 6px; box-sizing: border-box; }
+button { padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; }
+button:hover { background-color: #45a049; }
+.download-link { display: inline-block; margin-top: 10px; padding: 10px 15px; background-color: #2196F3; color: white; text-decoration: none; border-radius: 5px; }
+.download-link:hover { background-color: #1976D2; }
+.file-info { font-size: 12px; color: #666; margin-top: 5px; }
+</style>
 </head>
-
 <body>
-    <h1>Аугментация изображений</h1>
-    <form method="POST">
-        <div class="form-group">
-            <label for="images_dir">Директория с изображениями:</label>
-            <input type="text" id="images_dir" name="images_dir" required>
-        </div>
+<h1>Аугментация изображений</h1>
 
-        <div class="form-group">
-            <label for="augmentation_dir">Директория для сохранения аугментированных изображений:</label>
-            <input type="text" id="augmentation_dir" name="augmentation_dir" required>
-        </div>
-
-        <div class="form-group">
-            <label>Изображения размечены?</label>
-            <div>
-                <input type="radio" id="labeled_yes" name="is_labeled" value="Да">
-                <label for="labeled_yes" style="display: inline;">Да</label>
-
-                <input type="radio" id="labeled_no" name="is_labeled" value="Нет" checked>
-                <label for="labeled_no" style="display: inline;">Нет</label>
-            </div>
-        </div>
-
-        <div id="labeled_fields" class="labeled-fields" style="display: none;">
+<div class="container">
+    <div class="left-column">
+        <form method="POST" enctype="multipart/form-data">
+            <!-- Замена текстовых полей на загрузку файлов -->
             <div class="form-group">
-                <label for="labels_dir">Директория с метками:</label>
-                <input type="text" id="labels_dir" name="labels_dir">
+                <label for="images">Загрузите изображения:</label>
+                <input type="file" id="images" name="images" multiple accept=".jpg,.jpeg,.png" required>
+                <div class="file-info">Поддерживаемые форматы: JPG, JPEG, PNG</div>
             </div>
 
             <div class="form-group">
-                <label for="dir_images_with_labels">Директория для изображений с метками:</label>
-                <input type="text" id="dir_images_with_labels" name="dir_images_with_labels">
+                <label>Изображения размечены?</label>
+                <div>
+                    <input type="radio" id="labeled_yes" name="is_labeled" value="Да"
+                        {% if form_data.get('is_labeled', 'Нет') == 'Да' %}checked{% endif %}>
+                    <label for="labeled_yes" style="display: inline;">Да</label>
+
+                    <input type="radio" id="labeled_no" name="is_labeled" value="Нет"
+                        {% if form_data.get('is_labeled', 'Нет') == 'Нет' %}checked{% endif %}>
+                    <label for="labeled_no" style="display: inline;">Нет</label>
+                </div>
+            </div>
+
+            <div id="labeled_fields" class="labeled-fields">
+                <div class="form-group">
+                    <label for="labels">Загрузите файлы разметки:</label>
+                    <input type="file" id="labels" name="labels" multiple accept=".txt,.xml,.json">
+                    <div class="file-info">Файлы разметки (TXT, XML, JSON)</div>
+                </div>
             </div>
 
             <div class="form-group">
-                <label for="dir_with_new_labels">Директория для новых меток:</label>
-                <input type="text" id="dir_with_new_labels" name="dir_with_new_labels">
+                <label for="n_samples">Количество образцов для аугментации:</label>
+                <input type="number" id="n_samples" name="n_samples" 
+                       value="{{ form_data.get('n_samples', '') if form_data else '' }}" required min="4">
+            </div>
+
+            <div class="form-group">
+                <label>Выберите типы аугментации изображений:</label>
+                <div>
+                    <input type="checkbox" id="calculate_geometric" name="calculate_geometric" value="1"
+                        {% if form_data.get('calculate_geometric') %}checked{% endif %}>
+                    <label for="calculate_geometric" style="display:inline;">Геометрическая аугментация</label>
+                </div>
+                <div>
+                    <input type="checkbox" id="calculate_color" name="calculate_color" value="1"
+                        {% if form_data.get('calculate_color') %}checked{% endif %}>
+                    <label for="calculate_color" style="display:inline;">Цветовая аугментация</label>
+                </div>
+                <div>
+                    <input type="checkbox" id="calculate_noise" name="calculate_noise" value="1"
+                        {% if form_data.get('calculate_noise') %}checked{% endif %}>
+                    <label for="calculate_noise" style="display:inline;">Шумовая аугментация</label>
+                </div>
+                <div>
+                    <input type="checkbox" id="calculate_mix" name="calculate_mix" value="1"
+                        {% if form_data.get('calculate_mix') %}checked{% endif %}>
+                    <label for="calculate_mix" style="display:inline;">Композиционная аугментация</label>
+                </div>
+            </div>
+
+            <button type="submit">Запустить аугментацию</button>
+        </form>
+
+        {% if output_name %}
+        <div class="form-group" style="margin-top: 15px; padding: 10px; border: 1px solid #4CAF50; background-color: #f0fff0;">
+            <label>Результат аугментации:</label>
+            <p>{{ output_name }}</p>
+            
+            {% if zip_file_path %}
+            <a href="{{ url_for('download_zip', filename=zip_file_path.split('/')[-1]) }}" class="download-link">
+                Скачать результаты аугментации (ZIP)
+            </a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="right-column">
+        <div class="advanced-section">
+            <div class="section-title">Продвинутые настройки аугментации</div>
+            
+            <div class="section-title" style="font-size: 16px; margin-top: 20px;">Настройки геометрической аугментации</div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_nfeatures_to_orb">Максимальное количество ключевых точек для расчета алгоритма ORB:</label>
+                <input type="text" class="param-input" id="max_nfeatures_to_orb" name="max_nfeatures_to_orb"
+                       value="{{ form_data.get('max_nfeatures_to_orb', 'По умолчанию') if form_data else 'По умолчанию' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_crop_ratio">Минимальная доля изображения для алгоритма аугментации Random Crop (0-1):</label>
+                <input type="number" class="param-input" id="min_crop_ratio" name="min_crop_ratio" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('min_crop_ratio', '0.8') if form_data else '0.8' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_crop_ratio">Максимальная доля изображения для алгоритма аугментации Random Crop (0-1):</label>
+                <input type="number" class="param-input" id="max_crop_ratio" name="max_crop_ratio" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('max_crop_ratio', '0.95') if form_data else '0.95' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_zoom_factor">Минимальный коэффициент приближения для алгоритма аугментации Random Zoom (>1):</label>
+                <input type="number" class="param-input" id="min_zoom_factor" name="min_zoom_factor" step="0.01" min="1"
+                       value="{{ form_data.get('min_zoom_factor', '1.05') if form_data else '1.05' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_zoom_factor">Максимальный коэффициент приближения для алгоритма аугментации Random Zoom (>1):</label>
+                <input type="number" class="param-input" id="max_zoom_factor" name="max_zoom_factor" step="0.01" min="1"
+                       value="{{ form_data.get('max_zoom_factor', '1.4') if form_data else '1.4' }}">
+            </div>
+
+            <div class="section-title" style="font-size: 16px; margin-top: 20px;">Настройки цветовой аугментации</div>
+
+            <div class="param-group">
+                <label class="param-label" for="bins">Количествов бинов для расчета цветовых гистограмм:</label>
+                <input type="number" class="param-input" id="bins" name="bins" min="1" max="256"
+                       value="{{ form_data.get('bins', '32') if form_data else '32' }}">
+            </div>
+
+            <div class="param-group">
+                <label class="param-label" for="base_bits">Базовое количество бит для алгоритма аугментации Postersization (>1):</label>
+                <input type="number" class="param-input" id="base_bits" name="base_bits" min="1" max="8"
+                       value="{{ form_data.get('base_bits', '8') if form_data else '8' }}">
+            </div>
+
+            <div class="param-group">
+                <label class="param-label" for="min_bits">Минимальное количество бит для алгоритма аугментации Postersization (>1):</label>
+                <input type="number" class="param-input" id="min_bits" name="min_bits" min="1" max="8"
+                       value="{{ form_data.get('min_bits', '3') if form_data else '3' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_bits">Максимальное количество бит для алгоритма аугментации Postersization (>1):</label>
+                <input type="number" class="param-input" id="max_bits" name="max_bits" min="1" max="8"
+                       value="{{ form_data.get('max_bits', '6') if form_data else '6' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_h_shift">Минимальный сдвиг оттенка для алгоритма аугментации Jittering (0-180):</label>
+                <input type="number" class="param-input" id="min_h_shift" name="min_h_shift" min="0" max="360"
+                       value="{{ form_data.get('min_h_shift', '5') if form_data else '5' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_h_shift">Максимальный сдвиг оттенка для алгоритма аугментации Jittering (0-180):</label>
+                <input type="number" class="param-input" id="max_h_shift" name="max_h_shift" min="0" max="360"
+                       value="{{ form_data.get('max_h_shift', '30') if form_data else '30' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_s_scale">Минимальный коэффициент насыщенности для алгоритма аугментации Jittering (0-2):</label>
+                <input type="number" class="param-input" id="min_s_scale" name="min_s_scale" step="0.01" min="0" max="2"
+                       value="{{ form_data.get('min_s_scale', '0.8') if form_data else '0.8' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_s_scale">Максимальный коэффициент насыщенности для алгоритма аугментации Jittering (0-2):</label>
+                <input type="number" class="param-input" id="max_s_scale" name="max_s_scale" step="0.01" min="0" max="2"
+                       value="{{ form_data.get('max_s_scale', '1.5') if form_data else '1.5' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_v_scale">Минимальный коэффициент яркости для алгоритма аугментации Jittering (0-2) :</label>
+                <input type="number" class="param-input" id="min_v_scale" name="min_v_scale" step="0.01" min="0" max="2"
+                       value="{{ form_data.get('min_v_scale', '0.7') if form_data else '0.7' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_v_scale">Максимальный коэффициент яркости для алгоритма аугментации Jittering (0-2):</label>
+                <input type="number" class="param-input" id="max_v_scale" name="max_v_scale" step="0.01" min="0" max="2"
+                       value="{{ form_data.get('max_v_scale', '1.4') if form_data else '1.4' }}">
+            </div>
+
+            <div class="section-title" style="font-size: 16px; margin-top: 20px;">Настройки шумовой аугментации</div>
+            
+            <div class="param-group">
+                <label class="param-label" for="salt_vs_pepper">Доля белого шума в алгоритме аугментации Salt&Pepper (0-1):</label>
+                <input type="number" class="param-input" id="salt_vs_pepper" name="salt_vs_pepper" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('salt_vs_pepper', '0.5') if form_data else '0.5' }}">
+            </div>
+
+            <div class="param-group">
+                <label class="param-label" for="min_amount">Минимальная доля пикселей изображения для случайной замены на шум в алгоритме аугментации Salt&Pepper (0-1):</label>
+                <input type="number" class="param-input" id="min_amount" name="min_amount" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('min_amount', '0.01') if form_data else '0.01' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_amount">Максимальная доля пикселей изображения для случайной замены на шум в алгоритме аугментации Salt&Pepper (0-1):</label>
+                <input type="number" class="param-input" id="max_amount" name="max_amount" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('max_amount', '0.15') if form_data else '0.15' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="mean_gaussian_noise">Среднее значение гауссовского шума в алгоритме аугментации Gaussian Noise:</label>
+                <input type="number" class="param-input" id="mean_gaussian_noise" name="mean_gaussian_noise"
+                       value="{{ form_data.get('mean_gaussian_noise', '0') if form_data else '0' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="std_gaussian_noise">Стандартное отклонение гауссовского шума в алгоритме аугментации Gaussian Noise:</label>
+                <input type="number" class="param-input" id="std_gaussian_noise" name="std_gaussian_noise" min="0"
+                       value="{{ form_data.get('std_gaussian_noise', '25') if form_data else '25' }}">
+            </div>
+
+            <div class="section-title" style="font-size: 16px; margin-top: 20px;">Настройки композиционной аугментации</div>
+
+            <div class="param-group">
+                <label class="param-label" for="min_n_clusters">Минимальное количество кластеров изображений для расчета взвешенной метрики SSIM:</label>
+                <input type="number" class="param-input" id="min_n_clusters" name="min_n_clusters" min="1"
+                       value="{{ form_data.get('min_n_clusters', '5') if form_data else '5' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="min_alpha">Минимальный альфа-канал для алгоритма аугментации Alpha Blend (0-1):</label>
+                <input type="number" class="param-input" id="min_alpha" name="min_alpha" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('min_alpha', '0.3') if form_data else '0.3' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_alpha">Максимальный альфа-канал для алгоритма аугментации Alpha Blend (0-1):</label>
+                <input type="number" class="param-input" id="max_alpha" name="max_alpha" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('max_alpha', '0.7') if form_data else '0.7' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="max_inter_ration">Максимально допустимое пересечение разметки и изображений при генерации изображений алгоритмом MixUp (0-1):</label>
+                <input type="number" class="param-input" id="max_inter_ration" name="max_inter_ration" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('max_inter_ration', '0.4') if form_data else '0.4' }}">
+            </div>
+            
+            <div class="param-group">
+                <label class="param-label" for="alpha_for_cutmix">Значение показателя Alpha для алгоритма аугментации CutMix (0-1):</label>
+                <input type="number" class="param-input" id="alpha_for_cutmix" name="alpha_for_cutmix" step="0.01" min="0" max="1"
+                       value="{{ form_data.get('alpha_for_cutmix', '0.5') if form_data else '0.5' }}">
             </div>
         </div>
+    </div>
+</div>
 
-        <div class="form-group">
-            <label for="n_samples">Количество образцов для аугментации:</label>
-            <input type="number" id="n_samples" name="n_samples" required>
-        </div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const labeledYes = document.getElementById('labeled_yes');
+    const labeledNo = document.getElementById('labeled_no');
+    const labeledFields = document.getElementById('labeled_fields');
+    const labeledInputs = labeledFields.querySelectorAll('input');
 
-        <div class="form-group">
-            <label for="max_nfeatures_to_orb">Максимальное количество ключевых точек для расчета геометрической
-                аугументации (для выбора точек по умолчанию введите По умолчанию):</label>
-            <input type="text" id="max_nfeatures_to_orb" name="max_nfeatures_to_orb" required>
-        </div>
+    function toggleLabeledFields() {
+        const isLabeled = labeledYes.checked;
+        labeledInputs.forEach(input => input.disabled = !isLabeled);
+    }
 
-        <button type="submit">Запустить аугментацию</button>
-    </form>
+    labeledYes.addEventListener('change', toggleLabeledFields);
+    labeledNo.addEventListener('change', toggleLabeledFields);
 
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const labeledYes = document.getElementById('labeled_yes');
-            const labeledNo = document.getElementById('labeled_no');
-            const labeledFields = document.getElementById('labeled_fields');
-
-            function toggleLabeledFields() {
-                if (labeledYes.checked) {
-                    labeledFields.style.display = 'block';
-                } else {
-                    labeledFields.style.display = 'none';
-                }
-            }
-
-            labeledYes.addEventListener('change', toggleLabeledFields);
-            labeledNo.addEventListener('change', toggleLabeledFields);
-
-            // Инициализация при загрузке
-            toggleLabeledFields();
-        });
-    </script>
+    // Инициализация при загрузке
+    toggleLabeledFields();
+});
+</script>
 </body>
-
 </html>
