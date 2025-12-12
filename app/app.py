@@ -7,11 +7,10 @@ import tempfile
 
 app = Flask(__name__)
 
-timegan_augmenter = None  # сохранённый объект AutoAugmentationTimeseries
+timeseries_augmenter = None  # сохранённый объект AutoAugmentationTimeseries
 
 TEMP_INPUT_PATH = os.path.join(tempfile.gettempdir(), "timeseries_input.json")
 TEMP_MODIFIED_PATH = os.path.join(tempfile.gettempdir(), "timeseries_modified.json")
-
 
 def _df_to_index_lists(df: pd.DataFrame):
     out = {}
@@ -51,7 +50,6 @@ def save_initial_state(csv_path):
     }
     return result
 
-
 @app.route("/timeseries", methods=["GET", "POST"])
 def augmentation_timeseries():
     error = None
@@ -72,7 +70,7 @@ def augmentation_timeseries():
     return render_template("augmentation_timeseries.html", result=result, error=error)
 @app.route("/timeseries_action", methods=["POST"])
 def timeseries_action():
-    global timegan_augmenter
+    global timeseries_augmenter
 
     error = None
     result = {}
@@ -83,36 +81,43 @@ def timeseries_action():
         action = request.form.get("action")
         method = request.form.get("method", "linear")
         pred_len = int(request.form.get("pred_len", 30))
+        selected_features = request.form.getlist("series_list")
+        if df_input.index.dtype.kind in ('i', 'f'):  # int или float
+            selected_features = [int(f) for f in selected_features]
 
-
+        if not selected_features:
+            selected_features = df_input.index.tolist()
+        
         # Если глобального объекта нет, создаём новый
-        if timegan_augmenter is None:
-            timegan_augmenter = AutoAugmentationTimeseries(df_input)
-            timegan_augmenter.df_updated = df_modified.copy()
+        if timeseries_augmenter is None:
+            timeseries_augmenter = AutoAugmentationTimeseries(df_input)
+            timeseries_augmenter.selected_features = selected_features or df_input.index.tolist()
+            timeseries_augmenter.df_updated = df_modified.copy()
         else:
             # обновляем данные, но сохраняем уже обученную модель
-            timegan_augmenter.df_input = df_input
-            timegan_augmenter.df_updated = df_modified.copy()
-            timegan_augmenter.pred_len = pred_len
+            timeseries_augmenter.df_input = df_input
+            timeseries_augmenter.df_updated = df_modified.copy()
+            timeseries_augmenter.pred_len = pred_len
+            timeseries_augmenter.selected_features = selected_features
 
         # выполняем действие (интерполяция, экстраполяция и т.д.)
-        df_modified_new, html_dict = timegan_augmenter.apply_action(
-            timegan_augmenter.df_input,
-            timegan_augmenter.df_updated,
+        df_modified_new, html_dict = timeseries_augmenter.apply_action(
+            timeseries_augmenter.df_input,
+            timeseries_augmenter.df_updated,
             action,
             method
         )
         # обновляем внутреннее состояние
-        timegan_augmenter.df_updated = df_modified_new.copy()
+        timeseries_augmenter.df_updated = df_modified_new.copy()
 
         # сохраняем изменённый датафрейм во временный файл
         df_modified_new.to_json(TEMP_MODIFIED_PATH,  orient="split")
 
         # статистики
         stats_df = pd.DataFrame.from_dict(
-            timegan_augmenter.calculate_statistics(timegan_augmenter.df_updated), orient='index'
+            timeseries_augmenter.calculate_statistics(timeseries_augmenter.df_updated), orient='index'
         )
-        html_dict["df_modified_html"] = timegan_augmenter.df_updated.to_html(
+        html_dict["df_modified_html"] = timeseries_augmenter.df_updated.to_html(
             classes="dataframe table table-sm", border=0, na_rep="NaN"
         )
         html_dict["stats_modified_html"] = stats_df.to_html(
@@ -121,7 +126,7 @@ def timeseries_action():
 
         # формируем JSON для фронтенда
         stats_html_input = pd.DataFrame.from_dict(
-            timegan_augmenter.calculate_statistics(df_input), orient='index'
+            timeseries_augmenter.calculate_statistics(df_input), orient='index'
         ).to_html(classes="table table-sm", border=0, na_rep="NaN")
 
         df_json, cols, idxs = _df_to_index_lists(df_input)
@@ -142,6 +147,8 @@ def timeseries_action():
 
     except Exception as e:
         error = str(e)
+    
+    print(timeseries_augmenter.selected_features)
 
     return render_template("augmentation_timeseries.html", result=result, error=error)
 
@@ -174,7 +181,6 @@ def reset_data():
     except Exception as e:
         error = str(e)
     return render_template("augmentation_timeseries.html", result=result, error=error)
-
 
 @app.route("/")
 def main():

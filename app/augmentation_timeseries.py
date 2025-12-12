@@ -12,19 +12,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 class AutoAugmentationTimeseries:
-    def __init__(self, df_or_path: Union[pd.DataFrame, str]):
-        if isinstance(df_or_path, pd.DataFrame):
-            self.df_input = df_or_path.copy()
-        elif isinstance(df_or_path, str):
-            if not os.path.exists(df_or_path):
-                raise FileNotFoundError(f"Файл {df_or_path} не найден.")
-            df = pd.read_csv(df_or_path)
-            if df.iloc[:, 0].dtype == object and df.iloc[:, 0].is_unique:
-                df = df.set_index(df.columns[0])
-            self.df_input = df
-        else:
-            raise ValueError("df_or_path должен быть DataFrame или путь к CSV")
-
+    
+    def __init__(self, df_or_path, freq='D'):
+        self.selected_features: list = []
+        self.freq = freq
+        self.df_input = self._load_and_standardize(df_or_path)   # ← ключевой вызов
         self.df_input = self.df_input.apply(pd.to_numeric, errors="coerce")
         self.stats: Optional[Dict] = None
         self.n_missing_total: Optional[int] = None
@@ -48,6 +40,79 @@ class AutoAugmentationTimeseries:
         self.df_input.columns = pd.to_datetime(self.df_input.columns)
         self.df_updated = self.df_input
         self.counter = 0
+    
+    def _load_and_standardize(self, df_or_path) -> pd.DataFrame:
+       
+        if isinstance(df_or_path, pd.DataFrame):
+            return self._standardize_dataframe(df_or_path)
+
+        if isinstance(df_or_path, str):
+            if not os.path.exists(df_or_path):
+                raise FileNotFoundError(f"Файл не найден: {df_or_path}")
+
+            # пробуем читать CSV с разными разделителями
+            df = self._try_load_csv(df_or_path)
+
+            # приводим к стандарту
+            return self._standardize_dataframe(df)
+
+        raise TypeError("df_or_path должен быть DataFrame или строкой пути к CSV.")
+
+    def _try_load_csv(self, path: str) -> pd.DataFrame:
+       
+        for sep in [',', ';', '\t']:
+            try:
+                df = pd.read_csv(path, sep=sep)
+                if df.shape[1] > 1:
+                    return df
+            except Exception:
+                pass
+
+        raise ValueError(f"Не удалось прочитать CSV: {path}")
+
+
+    def _standardize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Формат "factor, date, value" (long)
+        if {'factor', 'date', 'value'}.issubset(df.columns):
+            df['date'] = pd.to_datetime(df['date'])
+            pivoted = df.pivot(index='factor', columns='date', values='value')
+            return pivoted.sort_index(axis=1)
+
+        # Проверяем первый столбец
+        first_col = df.columns[0]
+        if isinstance(first_col, str):
+            first_col_lower = first_col.lower()
+        else:
+            first_col_lower = ""
+
+        # Формат "date, f1, f2, ..." (wide)
+        if 'date' in first_col_lower or 'time' in first_col_lower:
+            df[df.columns[0]] = pd.to_datetime(df.iloc[:, 0])
+            df = df.set_index(df.columns[0]).T  # строки = факторы
+            return df
+
+        # Если колонки уже в datetime
+        try:
+            df.columns = pd.to_datetime(df.columns)
+            return df
+        except Exception:
+            pass
+
+        # Если индекс в datetime
+        try:
+            df.index = pd.to_datetime(df.index)
+            df = df.T
+            return df
+        except Exception:
+            pass
+
+        raise ValueError(
+            "Не удалось распознать формат данных. "
+            "Поддерживаются форматы:\n"
+            "1) factor, date, value (long)\n"
+            "2) date, f1, f2, ... (wide)\n"
+            "3) FACTORS в index, ДАТЫ в столбцах."
+        )
 
     def fit_timegan(self):
         df = self.df_updated.T
@@ -228,7 +293,6 @@ class AutoAugmentationTimeseries:
 
         embedder, recovery, generator, supervisor, _ = self.model
         embedder.eval(); recovery.eval(); generator.eval(); supervisor.eval()
-
         df_extended, self.forward_idx, self.backward_idx = self._extend_datetime_index()
         n_features = self.data_tensor.shape[1]
 
@@ -269,13 +333,16 @@ class AutoAugmentationTimeseries:
             generated = np.vstack([backward_arr, forward_arr])
             generated_original = self.scaler.inverse_transform(generated)
 
-        # Заполняем расширенный df
         df_extended.loc[self.backward_idx + self.forward_idx] = generated_original
-        self.df_updated = df_extended.sort_index().T.copy()
-        df_scaled_new = self.scaler.fit_transform(self.df_updated.T.values)
-        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device)
-        return self.df_updated
-  
+        full_df = df_extended.sort_index().T.copy()
+        self.df_updated = full_df.copy() 
+        df_scaled_new = self.scaler.fit_transform(full_df.T.values) 
+        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device) 
+        if self.selected_features:
+            return self.df_updated.loc[self.selected_features]
+        else:
+            return self.df_updated
+        
     @staticmethod
     def _check_stationarity(series: pd.Series) -> Dict[str, Optional[Union[str, float]]]:
         series_clean = series.dropna()
@@ -577,7 +644,7 @@ class AutoAugmentationTimeseries:
                 s_noised = s.copy()
                 s_noised[mask] = fn_row(s[mask]).values
                 out.loc[idx] = s_noised.values
-            except Exception:
+            except Exception: 
                 out.loc[idx] = row.values
         out.columns = df.columns
         return out
@@ -780,6 +847,13 @@ class AutoAugmentationTimeseries:
     def apply_action(self, df_input: pd.DataFrame, df_modified: pd.DataFrame, action: str, method: str, **kwargs):
    
         result_html = {}
+
+        def _filter_selected(df: pd.DataFrame) -> pd.DataFrame:
+            if self.selected_features:
+                selected = [s for s in self.selected_features if s in df.index]
+                return df.loc[selected]
+            return df
+        
         if action == "interpolate":
             methods_map = {
                 "linear": self.interpolate_linear,
@@ -796,12 +870,21 @@ class AutoAugmentationTimeseries:
             fn = methods_map.get(method)
             if fn is None:
                 raise ValueError(f"Неизвестный метод интерполяции: {method}")
-            df_modified  = fn(df_modified.copy())
+            #df_modified  = fn(df_modified.copy())
+            #self.df_updated = df_modified.copy()
+            df_selected = _filter_selected(df_modified.copy())
+            df_filled = fn(df_selected)
+            df_modified.update(df_filled)
             self.df_updated = df_modified.copy()
 
         elif action == "jitter":
             noise_type = method if method is not None else "jitter"
-            df_modified = self.add_noise(df_modified.copy(), noise_type=noise_type)
+            #df_modified = self.add_noise(df_modified.copy(), noise_type=noise_type)
+            #self.df_updated = df_modified.copy()
+            noise_type = method if method is not None else "jitter"
+            df_selected = _filter_selected(df_modified.copy())
+            df_noised = self.add_noise(df_selected.copy(), noise_type=noise_type)
+            df_modified.update(df_noised)
             self.df_updated = df_modified.copy()
 
         elif action == "extrapolate":
@@ -810,7 +893,11 @@ class AutoAugmentationTimeseries:
                 self.fit_timegan(**kwargs)
             
             self.direction = method
-            df_modified = self.predict_timegan(**kwargs)
+            #df_modified = self.predict_timegan(**kwargs)
+            #self.df_updated = df_modified.copy()
+            df_selected = _filter_selected(df_modified.copy())
+            df_extrapolated = self.predict_timegan(**kwargs)
+            df_modified.update(df_extrapolated)
             self.df_updated = df_modified.copy()
 
         stats_df = pd.DataFrame.from_dict(self.calculate_statistics_modified(df_modified), orient='index')
@@ -818,4 +905,3 @@ class AutoAugmentationTimeseries:
         result_html["stats_modified_html"] = stats_df.to_html(classes="dataframe table table-sm", border=0)
 
         return df_modified, result_html
-    fit_timegan
