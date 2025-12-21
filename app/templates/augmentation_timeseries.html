@@ -293,7 +293,7 @@
                 <h2>Исходный ряд</h2>
                 <div id="orig-plot" class="plot"></div>
             </div>
-            
+
             <h2>Модифицированный ряд</h2>
             <div class="plots-wrapper">
                 <div id="mod-plot" class="plot"></div>
@@ -320,107 +320,121 @@
             </form>
 
             <!-- Интерполяция -->
-<div class="menu-container">
-    <button class="augmentation-button" onclick="toggleMenu(this,'interpolation-menu')">Интерполяция</button>
-    <div class="interpolation-menu" id="interpolation-menu" style="width:440px;">
-        <div class="menu-title">Методы интерполяции</div>
+            <div class="menu-container">
+                <button class="augmentation-button"
+                    onclick="toggleMenu(this,'interpolation-menu')">Интерполяция</button>
+                <div class="interpolation-menu" id="interpolation-menu" style="width:440px;">
+                    <div class="menu-title">Методы интерполяции</div>
 
-        <form method="POST" action="{{ url_for('timeseries_action') }}" style="display:flex; flex-direction:column; gap:10px;">
-            <label style="font-weight:500;">Выберите ряд(ы):</label>
-            <select name="series_list" multiple size="6" required style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
-                {% for idx in result.indices %}
-                <option value="{{ idx }}">{{ idx }}</option>
-                {% endfor %}
-            </select>
+                    <form method="POST" action="{{ url_for('timeseries_action') }}"
+                        style="display:flex; flex-direction:column; gap:10px;">
+                        <label style="font-weight:500;">Выберите ряд(ы):</label>
+                        <select name="series_list" multiple size="6" required
+                            style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
+                            {% for idx in result.indices %}
+                            <option value="{{ idx }}">{{ idx }}</option>
+                            {% endfor %}
+                        </select>
 
-            <input type="hidden" name="action" value="interpolate">
-            <input type="hidden" name="method" id="interpolation-method" value="linear">
+                        <input type="hidden" name="action" value="interpolate">
+                        <input type="hidden" name="method" id="interpolation-method" value="linear">
 
-            <div class="menu-grid">
-                {% for method, label in [
-                ('auto', 'Автоматическая'),
-                ('linear', 'Линейная'),
-                ('quadratic', 'Полиномиальная (2 порядок)'),
-                ('cubic', 'Полиномиальная (3 порядок)'),
-                ('nearest', 'Ближайший сосед'),
-                ('spline2', 'Сплайн (2 порядок)'),
-                ('spline3', 'Сплайн (3 порядок)'),
-                ('pchip', 'Piecewise Cubic Hermite'),
-                ('akima', 'Akima'),
-                ('kalman', 'Калмановский фильтр')
-                ] %}
-                <button type="submit" onclick="document.getElementById('interpolation-method').value='{{ method }}'">{{ label }}</button>
-                {% endfor %}
+                        <div class="menu-grid">
+                            {% for method, label in [
+                            ('auto', 'Автоматическая'),
+                            ('linear', 'Линейная'),
+                            ('quadratic', 'Полиномиальная (2 порядок)'),
+                            ('cubic', 'Полиномиальная (3 порядок)'),
+                            ('nearest', 'Ближайший сосед'),
+                            ('spline2', 'Сплайн (2 порядок)'),
+                            ('spline3', 'Сплайн (3 порядок)'),
+                            ('pchip', 'Piecewise Cubic Hermite'),
+                            ('akima', 'Akima'),
+                            ('kalman', 'Калмановский фильтр')
+                            ] %}
+                            <button type="submit"
+                                onclick="document.getElementById('interpolation-method').value='{{ method }}'">{{ label
+                                }}</button>
+                            {% endfor %}
+                        </div>
+                    </form>
+                </div>
             </div>
-        </form>
-    </div>
-</div>
 
 
-<!-- Экстраполяция/Ретрополяция -->
-<div class="menu-container">
-    <button class="augmentation-button" onclick="toggleMenu(this,'extrapolation-menu')">Экстраполяция/Ретрополяция</button>
-    <div class="extrapolation-menu" id="extrapolation-menu" style="width:440px;">
-        <div class="menu-title">Методы экстраполяции</div>
+            <!-- Экстраполяция/Ретрополяция -->
+            <div class="menu-container">
+                <button class="augmentation-button"
+                    onclick="toggleMenu(this,'extrapolation-menu')">Экстраполяция/Ретрополяция</button>
+                <div class="extrapolation-menu" id="extrapolation-menu" style="width:440px;">
+                    <div class="menu-title">Методы экстраполяции</div>
 
-        <form method="POST" action="{{ url_for('timeseries_action') }}" style="display:flex; flex-direction:column; gap:10px;">
-            <label style="font-weight:500;">Выберите ряд(ы):</label>
-            <select name="series_list" multiple size="6" required style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
-                {% for idx in result.indices %}
-                <option value="{{ idx }}">{{ idx }}</option>
-                {% endfor %}
-            </select>
+                    <form method="POST" action="{{ url_for('timeseries_action') }}"
+                        style="display:flex; flex-direction:column; gap:10px;">
+                        <label style="font-weight:500;">Выберите ряд(ы):</label>
+                        <select name="series_list" multiple size="6" required
+                            style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
+                            {% for idx in result.indices %}
+                            <option value="{{ idx }}">{{ idx }}</option>
+                            {% endfor %}
+                        </select>
 
-            <input type="hidden" name="action" value="extrapolate">
-            <input type="hidden" name="method" id="extrapolation-method" value="forward">
-            <input type="number" name="pred_len" min="1" value="10" style="width:70px; padding:4px; margin:5px 0;">
+                        <input type="hidden" name="action" value="extrapolate">
+                        <input type="hidden" name="method" id="extrapolation-method" value="forward">
+                        <input type="number" name="pred_len" min="1" value="10"
+                            style="width:70px; padding:4px; margin:5px 0;">
 
-            <div class="menu-grid">
-                {% for method, label, direction in [
-                    ('forward', 'Экстраполяция (вперед)', 'forward'),
-                    ('backward', 'Ретрополяция (назад)', 'backward'),
-                    ('both', 'Комбинированная', 'both')
-                ] %}
-                <button type="submit" onclick="document.getElementById('extrapolation-method').value='{{ direction }}'">{{ label }}</button>
-                {% endfor %}
+                        <div class="menu-grid">
+                            {% for method, label, direction in [
+                            ('forward', 'Экстраполяция (вперед)', 'forward'),
+                            ('backward', 'Ретрополяция (назад)', 'backward'),
+                            ('both', 'Комбинированная', 'both')
+                            ] %}
+                            <button type="submit"
+                                onclick="document.getElementById('extrapolation-method').value='{{ direction }}'">{{
+                                label }}</button>
+                            {% endfor %}
+                        </div>
+                    </form>
+                </div>
             </div>
-        </form>
-    </div>
-</div>
 
 
-<!-- Шум -->
-<div class="menu-container">
-    <button class="augmentation-button" onclick="toggleMenu(this,'noise-menu')">Добавление шума</button>
-    <div class="noise-menu" id="noise-menu" style="width:440px;">
-        <div class="menu-title">Методы добавления шума</div>
+            <!-- Шум -->
+            <div class="menu-container">
+                <button class="augmentation-button" onclick="toggleMenu(this,'noise-menu')">Добавление шума</button>
+                <div class="noise-menu" id="noise-menu" style="width:440px;">
+                    <div class="menu-title">Методы добавления шума</div>
 
-        <form method="POST" action="{{ url_for('timeseries_action') }}" style="display:flex; flex-direction:column; gap:10px;">
-            <label style="font-weight:500;">Выберите ряд(ы):</label>
-            <select name="series_list" multiple size="6" required style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
-                {% for idx in result.indices %}
-                <option value="{{ idx }}">{{ idx }}</option>
-                {% endfor %}
-            </select>
+                    <form method="POST" action="{{ url_for('timeseries_action') }}"
+                        style="display:flex; flex-direction:column; gap:10px;">
+                        <label style="font-weight:500;">Выберите ряд(ы):</label>
+                        <select name="series_list" multiple size="6" required
+                            style="width:100%; padding:6px; border-radius:6px; box-sizing:border-box;">
+                            {% for idx in result.indices %}
+                            <option value="{{ idx }}">{{ idx }}</option>
+                            {% endfor %}
+                        </select>
 
-            <input type="hidden" name="action" value="jitter">
-            <input type="hidden" name="method" id="noise-method" value="jitter">
+                        <input type="hidden" name="action" value="jitter">
+                        <input type="hidden" name="method" id="noise-method" value="jitter">
 
-            <div class="menu-grid">
-                {% for method, label in [
-                    ('jitter', 'Автоматически'),
-                    ('jitter_gauss', 'Гауссов шум'),
-                    ('jitter_normal', 'Нормальный шум'),
-                    ('jitter_outliers', 'Выбросы'),
-                    ('jitter_multiplicative', 'Мультипликативный шум'),
-                    ('jitter_white', 'Белый шум')
-                ] %}
-                <button type="submit" onclick="document.getElementById('noise-method').value='{{ method }}'">{{ label }}</button>
-                {% endfor %}
+                        <div class="menu-grid">
+                            {% for method, label in [
+                            ('jitter_gauss', 'Гауссов шум'),
+                            ('jitter_normal', 'Нормальный шум'),
+                            ('jitter_outliers', 'Выбросы'),
+                            ('jitter_multiplicative', 'Мультипликативный шум'),
+                            ('jitter_white', 'Белый шум')
+                            ] %}
+                            <button type="submit"
+                                onclick="document.getElementById('noise-method').value='{{ method }}'">{{ label
+                                }}</button>
+                            {% endfor %}
+                        </div>
+                    </form>
+                </div>
             </div>
-        </form>
-    </div>
-</div>
 
 
         </div>
@@ -439,48 +453,49 @@
         document.addEventListener('click', function (event) {
             if (!event.target.closest('.menu-container')) {
                 document.querySelectorAll('.interpolation-menu, .extrapolation-menu, .noise-menu')
-                      .forEach(m => m.style.display = 'none');
+                    .forEach(m => m.style.display = 'none');
             }
         });
 
         (function () {
-            const dfData = {{ result.df_json | default ({}) | tojson | safe }};
-            const modData = {{ result.modified_json | default ({}) | tojson | safe }};
-            const columns = {{ result.columns | default ([]) | tojson | safe }};
-            const indices = {{ result.indices | default ([]) | tojson | safe }};
+            const dfData = {{ result.df_json | default ({}) | tojson | safe
+        }};
+        const modData = {{ result.modified_json | default ({}) | tojson | safe }};
+        const columns = {{ result.columns | default ([]) | tojson | safe }};
+        const indices = {{ result.indices | default ([]) | tojson | safe }};
 
-            const factorSelect = document.getElementById('factor-select');
+        const factorSelect = document.getElementById('factor-select');
 
-            function populateFactorSelect() {
-                factorSelect.innerHTML = '';
-                indices.forEach(idx => {
-                    let op = document.createElement('option');
-                    op.value = idx;
-                    op.text = idx;
-                    factorSelect.appendChild(op);
-                });
-                if (indices.length > 0) factorSelect.value = indices[0];
-            }
+        function populateFactorSelect() {
+            factorSelect.innerHTML = '';
+            indices.forEach(idx => {
+                let op = document.createElement('option');
+                op.value = idx;
+                op.text = idx;
+                factorSelect.appendChild(op);
+            });
+            if (indices.length > 0) factorSelect.value = indices[0];
+        }
 
-            function drawPlots(factor) {
-                if (!factor) return;
-                let origY = dfData[factor] || [];
-                let modY = modData[factor] || [];
+        function drawPlots(factor) {
+            if (!factor) return;
+            let origY = dfData[factor] || [];
+            let modY = modData[factor] || [];
 
-                Plotly.react('orig-plot', [{
-                    x: columns, y: origY, mode: 'lines+markers',
-                }], { margin: { t: 20, r: 10, l: 40, b: 40 } });
+            Plotly.react('orig-plot', [{
+                x: columns, y: origY, mode: 'lines+markers',
+            }], { margin: { t: 20, r: 10, l: 40, b: 40 } });
 
-                Plotly.react('mod-plot', [{
-                    x: columns, y: modY, mode: 'lines+markers',
-                }], { margin: { t: 20, r: 10, l: 40, b: 40 } });
-            }
+            Plotly.react('mod-plot', [{
+                x: columns, y: modY, mode: 'lines+markers',
+            }], { margin: { t: 20, r: 10, l: 40, b: 40 } });
+        }
 
-            populateFactorSelect();
-            if (indices.length > 0) drawPlots(indices[0]);
+        populateFactorSelect();
+        if (indices.length > 0) drawPlots(indices[0]);
 
-            factorSelect.addEventListener('change', e => drawPlots(e.target.value));
-        })();
+        factorSelect.addEventListener('change', e => drawPlots(e.target.value));
+        }) ();
     </script>
 </body>
 

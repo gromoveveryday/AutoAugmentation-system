@@ -398,29 +398,116 @@ class AutoAugmentationTimeseries:
         return stats_all
 
     @staticmethod
-    def kalman_manual(series: pd.Series, A=1, H=1, Q=1e-5, R=1e-2) -> pd.Series:
+    def kalman_manual(series: pd.Series, A: float = None, H: float = 1, 
+                  Q: float = None, R: float = None) -> pd.Series:
+        """
+        Одномерный фильтр Калмана для интерполяции.
+        
+        Parameters:
+        -----------
+        series : pd.Series
+            Временной ряд с пропусками
+        A : float
+            Коэффициент перехода состояния (обычно близко к 1 для временных рядов)
+        H : float
+            Коэффициент измерения (обычно 1)
+        Q : float
+            Дисперсия шума процесса
+        R : float
+            Дисперсия шума измерения
+        """
         n = len(series)
         if n == 0:
             return series
+        
+        # Автоподбор параметров по умолчанию
+        if A is None:
+            A = 0.95  # консервативная оценка для большинства временных рядов
+        
+        if Q is None or R is None:
+            Q, R = self._estimate_noise_variances(series, A)
+        
         x_est = np.zeros(n, dtype=float)
         P = np.zeros(n, dtype=float)
-        s_clean = pd.to_numeric(series, errors="coerce").dropna()
-        if s_clean.empty:
+        
+        # Начальные значения
+        valid_data = series.dropna()
+        if valid_data.empty:
             return pd.Series([np.nan] * n, index=series.index)
-        x_est[0] = float(s_clean.iloc[0])
-        P[0] = 1.0
+        
+        x_est[0] = float(valid_data.iloc[0])
+        P[0] = R if R > 0 else 1.0  # начальная дисперсия
+        
         for t in range(1, n):
+            # Предсказание
             x_pred = A * x_est[t - 1]
             P_pred = A * P[t - 1] * A + Q
+            
+            # Обновление
             if pd.isna(series.iloc[t]):
                 x_est[t] = x_pred
                 P[t] = P_pred
             else:
                 z = float(series.iloc[t])
-                K = P_pred * H / (H * P_pred * H + R)
+                # Избегаем деления на ноль
+                denom = H * P_pred * H + R
+                if denom == 0:
+                    K = 0
+                else:
+                    K = P_pred * H / denom
+                
                 x_est[t] = x_pred + K * (z - H * x_pred)
                 P[t] = (1 - K * H) * P_pred
+        
         return pd.Series(x_est, index=series.index)
+    
+    def _estimate_kalman_params(self, series: pd.Series):
+        """
+        Оценка параметров фильтра Калмана из данных.
+        """
+        valid_data = series.dropna().values
+        
+        if len(valid_data) < 3:
+            return 0.95, 1e-5, 1e-2  # значения по умолчанию
+        
+        # Оценка коэффициента AR(1)
+        if len(valid_data) > 1:
+            A = np.corrcoef(valid_data[:-1], valid_data[1:])[0, 1]
+            A = np.clip(A, 0.1, 0.99)  # ограничиваем разумными значениями
+        else:
+            A = 0.95
+        
+        # Оценка дисперсий шумов
+        residuals = valid_data[1:] - A * valid_data[:-1]
+        Q = np.var(residuals) if len(residuals) > 1 else 1e-5
+        R = np.var(valid_data) * 0.1  # эвристика
+        
+        # Ограничиваем минимальные значения
+        Q = max(Q, 1e-10)
+        R = max(R, 1e-10)
+        
+        return A, Q, R
+
+    def _estimate_noise_variances(self, series: pd.Series, A: float):
+        """
+        Оценка дисперсий шумов процесса и измерения.
+        """
+        valid_data = series.dropna().values
+        
+        if len(valid_data) < 2:
+            return 1e-5, 1e-2
+        
+        # Q - дисперсия шума процесса
+        if len(valid_data) > 1:
+            residuals = valid_data[1:] - A * valid_data[:-1]
+            Q = np.var(residuals) if len(residuals) > 0 else 1e-5
+        else:
+            Q = 1e-5
+        
+        # R - дисперсия шума измерения (оцениваем по вариации данных)
+        R = np.var(valid_data) * 0.1 if len(valid_data) > 1 else 1e-2
+        
+        return max(Q, 1e-10), max(R, 1e-10)
 
     def _rowwise_interpolate(self, df: pd.DataFrame, method: str, order: int = None) -> pd.DataFrame:
         df_num = df.apply(pd.to_numeric, errors="coerce")
@@ -522,24 +609,37 @@ class AutoAugmentationTimeseries:
         return filled
 
     def interpolate_kalman(self, df: pd.DataFrame) -> pd.DataFrame:
+
         df_num = df.apply(pd.to_numeric, errors="coerce")
-        filled = pd.DataFrame(index=df_num.index, columns=df_num.columns, dtype=float)
-        for r_idx, row in df_num.iterrows():
-            s = pd.Series(row.values, index=df_num.columns)
+        filled = df_num.copy().astype(float)
+    
+        for i, row in enumerate(df_num.itertuples(index=False)):
+            s = pd.Series(row, index=df_num.columns)
+        
+            # Пропускаем строки с малым количеством наблюдений
             mask_notna = s.notna()
             if mask_notna.sum() < 2:
-                filled.loc[r_idx] = s.values
                 continue
-
-            first, last = mask_notna.idxmax(), mask_notna[::-1].idxmax()
-            s_trunc = s.loc[first:last]
-
-            s_trunc_filled = self.kalman_manual(s_trunc)
-            s.loc[first:last] = s_trunc_filled
-
-            filled.loc[r_idx] = s.values
-
-        filled.columns = df.columns
+        
+            # Находим первый и последний ненулевые индексы
+            valid_indices = np.where(mask_notna)[0]
+            if len(valid_indices) == 0:
+                continue
+            
+            first_idx, last_idx = valid_indices[0], valid_indices[-1]
+        
+            # Извлекаем и интерполируем только нужный сегмент
+            segment = s.iloc[first_idx:last_idx + 1]
+        
+            # Автоподбор параметров фильтра Калмана
+            A, Q, R = self._estimate_kalman_params(segment)
+        
+            # Интерполяция
+            interpolated = self.kalman_manual(segment, A=A, Q=Q, R=R)
+        
+            # Заполняем пропуски
+            filled.iloc[i, first_idx:last_idx + 1] = interpolated.values
+    
         return filled
 
     def interpolate_auto(self, df: pd.DataFrame) -> pd.DataFrame:
