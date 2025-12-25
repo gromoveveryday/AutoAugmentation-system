@@ -349,8 +349,7 @@
                             ('spline2', 'Сплайн (2 порядок)'),
                             ('spline3', 'Сплайн (3 порядок)'),
                             ('pchip', 'Piecewise Cubic Hermite'),
-                            ('akima', 'Akima'),
-                            ('kalman', 'Калмановский фильтр')
+                            ('akima', 'Akima')
                             ] %}
                             <button type="submit"
                                 onclick="document.getElementById('interpolation-method').value='{{ method }}'">{{ label
@@ -422,10 +421,11 @@
                         <div class="menu-grid">
                             {% for method, label in [
                             ('jitter_gauss', 'Гауссов шум'),
-                            ('jitter_normal', 'Нормальный шум'),
                             ('jitter_outliers', 'Выбросы'),
                             ('jitter_multiplicative', 'Мультипликативный шум'),
-                            ('jitter_white', 'Белый шум')
+                            ('jitter_white', 'Белый шум'),
+                            ('markovian', 'Марковский шум'),
+                            ('smoothed', 'Экспоненциальный шум')
                             ] %}
                             <button type="submit"
                                 onclick="document.getElementById('noise-method').value='{{ method }}'">{{ label

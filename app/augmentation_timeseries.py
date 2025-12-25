@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Union
 from scipy.interpolate import PchipInterpolator, Akima1DInterpolator
+from scipy import signal
 from statsmodels.tsa.stattools import adfuller
 import pandas as pd
 import numpy as np
@@ -335,14 +336,17 @@ class AutoAugmentationTimeseries:
 
         df_extended.loc[self.backward_idx + self.forward_idx] = generated_original
         full_df = df_extended.sort_index().T.copy()
-        self.df_updated = full_df.copy() 
+     #   self.df_updated = full_df.copy() 
         df_scaled_new = self.scaler.fit_transform(full_df.T.values) 
-        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device) 
-        if self.selected_features:
-            return self.df_updated.loc[self.selected_features]
-        else:
-            return self.df_updated
+        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device)
+        extrapolated_df = pd.DataFrame(generated_original, index=self.backward_idx + self.forward_idx).T
+        if hasattr(self, 'selected_features') and self.selected_features:
+            valid_features = [f for f in self.selected_features if f in extrapolated_df.index]
+            if valid_features:
+                extrapolated_df = extrapolated_df.loc[valid_features]
         
+        return extrapolated_df
+   
     @staticmethod
     def _check_stationarity(series: pd.Series) -> Dict[str, Optional[Union[str, float]]]:
         series_clean = series.dropna()
@@ -397,139 +401,58 @@ class AutoAugmentationTimeseries:
         self.n_missing_total = total_missing
         return stats_all
 
-    @staticmethod
-    def kalman_manual(series: pd.Series, A: float = None, H: float = 1, 
-                  Q: float = None, R: float = None) -> pd.Series:
-        """
-        Одномерный фильтр Калмана для интерполяции.
-        
-        Parameters:
-        -----------
-        series : pd.Series
-            Временной ряд с пропусками
-        A : float
-            Коэффициент перехода состояния (обычно близко к 1 для временных рядов)
-        H : float
-            Коэффициент измерения (обычно 1)
-        Q : float
-            Дисперсия шума процесса
-        R : float
-            Дисперсия шума измерения
-        """
-        n = len(series)
-        if n == 0:
-            return series
-        
-        # Автоподбор параметров по умолчанию
-        if A is None:
-            A = 0.95  # консервативная оценка для большинства временных рядов
-        
-        if Q is None or R is None:
-            Q, R = self._estimate_noise_variances(series, A)
-        
-        x_est = np.zeros(n, dtype=float)
-        P = np.zeros(n, dtype=float)
-        
-        # Начальные значения
-        valid_data = series.dropna()
-        if valid_data.empty:
-            return pd.Series([np.nan] * n, index=series.index)
-        
-        x_est[0] = float(valid_data.iloc[0])
-        P[0] = R if R > 0 else 1.0  # начальная дисперсия
-        
-        for t in range(1, n):
-            # Предсказание
-            x_pred = A * x_est[t - 1]
-            P_pred = A * P[t - 1] * A + Q
-            
-            # Обновление
-            if pd.isna(series.iloc[t]):
-                x_est[t] = x_pred
-                P[t] = P_pred
-            else:
-                z = float(series.iloc[t])
-                # Избегаем деления на ноль
-                denom = H * P_pred * H + R
-                if denom == 0:
-                    K = 0
-                else:
-                    K = P_pred * H / denom
-                
-                x_est[t] = x_pred + K * (z - H * x_pred)
-                P[t] = (1 - K * H) * P_pred
-        
-        return pd.Series(x_est, index=series.index)
-    
-    def _estimate_kalman_params(self, series: pd.Series):
-        """
-        Оценка параметров фильтра Калмана из данных.
-        """
-        valid_data = series.dropna().values
-        
-        if len(valid_data) < 3:
-            return 0.95, 1e-5, 1e-2  # значения по умолчанию
-        
-        # Оценка коэффициента AR(1)
-        if len(valid_data) > 1:
-            A = np.corrcoef(valid_data[:-1], valid_data[1:])[0, 1]
-            A = np.clip(A, 0.1, 0.99)  # ограничиваем разумными значениями
-        else:
-            A = 0.95
-        
-        # Оценка дисперсий шумов
-        residuals = valid_data[1:] - A * valid_data[:-1]
-        Q = np.var(residuals) if len(residuals) > 1 else 1e-5
-        R = np.var(valid_data) * 0.1  # эвристика
-        
-        # Ограничиваем минимальные значения
-        Q = max(Q, 1e-10)
-        R = max(R, 1e-10)
-        
-        return A, Q, R
-
-    def _estimate_noise_variances(self, series: pd.Series, A: float):
-        """
-        Оценка дисперсий шумов процесса и измерения.
-        """
-        valid_data = series.dropna().values
-        
-        if len(valid_data) < 2:
-            return 1e-5, 1e-2
-        
+   # def _estimate_noise_variances(self, series: pd.Series, A: float):
+   #     """
+   #     Оценка дисперсий шумов процесса и измерения.
+    #    """
+    #    valid_data = series.dropna().values
+    #    
+    #    if len(valid_data) < 2:
+    #        return 1e-5, 1e-2
+    #    
         # Q - дисперсия шума процесса
-        if len(valid_data) > 1:
-            residuals = valid_data[1:] - A * valid_data[:-1]
-            Q = np.var(residuals) if len(residuals) > 0 else 1e-5
-        else:
-            Q = 1e-5
+    #    if len(valid_data) > 1:
+    #        residuals = valid_data[1:] - A * valid_data[:-1]
+    #        Q = np.var(residuals) if len(residuals) > 0 else 1e-5
+    #    else:
+     #       Q = 1e-5
         
-        # R - дисперсия шума измерения (оцениваем по вариации данных)
-        R = np.var(valid_data) * 0.1 if len(valid_data) > 1 else 1e-2
+     #   # R - дисперсия шума измерения (оцениваем по вариации данных)
+   #     R = np.var(valid_data) * 0.1 if len(valid_data) > 1 else 1e-2
         
-        return max(Q, 1e-10), max(R, 1e-10)
+    #    return max(Q, 1e-10), max(R, 1e-10)
 
     def _rowwise_interpolate(self, df: pd.DataFrame, method: str, order: int = None) -> pd.DataFrame:
         df_num = df.apply(pd.to_numeric, errors="coerce")
         df_filled = pd.DataFrame(index=df_num.index, columns=df_num.columns, dtype=float)
+        
         for idx, row in df_num.iterrows():
             s = row.copy()
             mask_notna = s.notna()
-            if mask_notna.sum() < 2:  # мало данных для интерполяции
+            
+            if mask_notna.sum() < 2:
                 df_filled.loc[idx] = s.values
                 continue
-            first, last = mask_notna.idxmax(), mask_notna[::-1].idxmax()  # границы
-            s_trunc = s.loc[first:last]
+                
             try:
+                # Интерполируем только пропуски, сохраняя известные значения
                 if method in ["polynomial", "spline"]:
-                    filled_row = s_trunc.interpolate(method=method, order=order, limit_direction='both')
+                    if mask_notna.sum() >= (order if order else 2):
+                        # interpolate() НЕ меняет не-NaN значения
+                        filled_row = s.interpolate(method=method, order=order, limit_area='inside')
+                    else:
+                        filled_row = s.interpolate(method='linear', limit_area='inside')
                 else:
-                    filled_row = s_trunc.interpolate(method=method, limit_direction='both')
-
-                s.loc[first:last] = filled_row
+                    filled_row = s.interpolate(method=method, limit_area='inside')
+                
+                df_filled.loc[idx] = filled_row.values
             except Exception:
-                pass
-            df_filled.loc[idx] = s.values
+                try:
+                    filled_row = s.interpolate(method='linear', limit_area='inside')
+                    df_filled.loc[idx] = filled_row.values
+                except Exception:
+                    df_filled.loc[idx] = s.values
+        
         df_filled.columns = df.columns
         return df_filled
 
@@ -560,29 +483,39 @@ class AutoAugmentationTimeseries:
         for r_idx, row in df_num.iterrows():
             s = row.values.copy()
             mask_notna = ~np.isnan(s)
+            
             if mask_notna.sum() < 2:
                 filled.loc[r_idx] = s
                 continue
 
-            first_idx = np.where(mask_notna)[0][0]
-            last_idx = np.where(mask_notna)[0][-1]
+            # Сохраняем исходные значения
+            original_values = s[mask_notna]
+            original_indices = np.where(mask_notna)[0]
+            
+            x_known = idx_num[mask_notna]
+            y_known = s[mask_notna]
 
-            # точки для интерполяции внутри first..last
-            x_known = idx_num[first_idx:last_idx+1][mask_notna[first_idx:last_idx+1]]
-            y_known = s[first_idx:last_idx+1][mask_notna[first_idx:last_idx+1]]
-
-            if len(x_known) < 2:
-                # интерполировать нечего
-                filled.loc[r_idx] = s
-                continue
-
+            # Интерполируем только между известными точками
+            first_known_idx = x_known[0]
+            last_known_idx = x_known[-1]
+            
+            # Создаем PCHIP интерполятор
             try:
                 interpolator = PchipInterpolator(x_known, y_known)
-                s[first_idx:last_idx+1] = interpolator(idx_num[first_idx:last_idx+1])
+                
+                # Интерполируем только точки между известными
+                for idx in range(first_known_idx + 1, last_known_idx):
+                    if np.isnan(s[idx]):  # Только NaN точки между известными
+                        s[idx] = interpolator(idx)
+                
+                # Восстанавливаем исходные значения
+                for idx, val in zip(original_indices, original_values):
+                    s[idx] = val
+                
+                filled.loc[r_idx] = s
             except Exception:
-                pass
-
-            filled.loc[r_idx] = s
+                # Если PCHIP не сработал, оставляем как есть
+                filled.loc[r_idx] = s
 
         filled.columns = df.columns
         return filled
@@ -592,58 +525,46 @@ class AutoAugmentationTimeseries:
         ncols = df_num.shape[1]
         idx_num = np.arange(ncols)
         filled = pd.DataFrame(index=df_num.index, columns=df_num.columns, dtype=float)
+        
         for r_idx, row in df_num.iterrows():
             s = row.values
-            mask = ~np.isnan(s)
-            if mask.sum() == 0:
-                filled.loc[r_idx] = [np.nan] * ncols
-            elif mask.sum() == 1:
-                filled.loc[r_idx] = [float(s[mask][0])] * ncols
-            else:
-                try:
-                    filled_vals = Akima1DInterpolator(idx_num[mask], s[mask])(idx_num)
-                    filled.loc[r_idx] = filled_vals
-                except Exception:
-                    filled.loc[r_idx] = s
+            mask_notna = ~np.isnan(s)
+            
+            if mask_notna.sum() < 2:
+                filled.loc[r_idx] = s
+                continue
+            
+            # Сохраняем исходные значения
+            original_values = s[mask_notna]
+            original_indices = np.where(mask_notna)[0]
+            
+            x_known = idx_num[mask_notna]
+            y_known = s[mask_notna]
+            
+            try:
+                interpolator = Akima1DInterpolator(x_known, y_known)
+                
+                # Интерполируем только точки между известными
+                first_known_idx = x_known[0]
+                last_known_idx = x_known[-1]
+                
+                for idx in range(first_known_idx + 1, last_known_idx):
+                    if np.isnan(s[idx]):
+                        s[idx] = interpolator(idx)
+                
+                # Восстанавливаем исходные значения
+                for idx, val in zip(original_indices, original_values):
+                    s[idx] = val
+                
+                filled.loc[r_idx] = s
+            except Exception:
+                # Если Akima не сработал, оставляем как есть
+                filled.loc[r_idx] = s
+        
         filled.columns = df.columns
         return filled
 
-    def interpolate_kalman(self, df: pd.DataFrame) -> pd.DataFrame:
-
-        df_num = df.apply(pd.to_numeric, errors="coerce")
-        filled = df_num.copy().astype(float)
-    
-        for i, row in enumerate(df_num.itertuples(index=False)):
-            s = pd.Series(row, index=df_num.columns)
-        
-            # Пропускаем строки с малым количеством наблюдений
-            mask_notna = s.notna()
-            if mask_notna.sum() < 2:
-                continue
-        
-            # Находим первый и последний ненулевые индексы
-            valid_indices = np.where(mask_notna)[0]
-            if len(valid_indices) == 0:
-                continue
-            
-            first_idx, last_idx = valid_indices[0], valid_indices[-1]
-        
-            # Извлекаем и интерполируем только нужный сегмент
-            segment = s.iloc[first_idx:last_idx + 1]
-        
-            # Автоподбор параметров фильтра Калмана
-            A, Q, R = self._estimate_kalman_params(segment)
-        
-            # Интерполяция
-            interpolated = self.kalman_manual(segment, A=A, Q=Q, R=R)
-        
-            # Заполняем пропуски
-            filled.iloc[i, first_idx:last_idx + 1] = interpolated.values
-    
-        return filled
-
     def interpolate_auto(self, df: pd.DataFrame) -> pd.DataFrame:
-
         methods = [
             self.interpolate_linear,
             self.interpolate_quadratic,
@@ -652,85 +573,208 @@ class AutoAugmentationTimeseries:
             lambda d: self.interpolate_spline2(d, order=2),
             lambda d: self.interpolate_spline3(d, order=3),
             self.interpolate_pchip,
-            self.interpolate_akima,
-            self.interpolate_kalman
+            self.interpolate_akima
         ]
 
         method_names = [
             "linear", "quadratic", "cubic", "nearest",
-            "spline2", "spline3", "pchip", "akima", "kalman"
+            "spline2", "spline3", "pchip", "akima"
         ]
 
         df_num = df.copy()
         df_result = pd.DataFrame(index=df_num.index, columns=df_num.columns, dtype=float)
         self.best_methods_interpolation = {}
-
+        
         for idx in df_num.index:
-            row_df = df_num.loc[[idx]].copy()  # DataFrame с одной строкой
-            # если в строке нет пропусков — ничего не делаем
-            if not row_df.isna().any(axis=None):
-                df_result.loc[idx] = row_df.iloc[0].values
+            row = df_num.loc[idx].copy()
+            mask_notna = row.notna()
+            
+            # Если нет пропусков - возвращаем как есть
+            if not row.isna().any():
+                df_result.loc[idx] = row.values
                 self.best_methods_interpolation[idx] = "none"
                 continue
-
-            try:
-                stats_orig = self.calculate_statistics(row_df)
-            except Exception:
-                # если не удалось — оставляем как есть
-                df_result.loc[idx] = row_df.iloc[0].values
-                self.best_methods_interpolation[idx] = "none"
+            
+            # Проверяем достаточно ли точек
+            if mask_notna.sum() < 2:
+                # Меньше 2 точек - простое заполнение
+                s_filled = row.ffill().bfill()
+                df_result.loc[idx] = s_filled.values
+                self.best_methods_interpolation[idx] = "ffill_bfill"
                 continue
-
-            best_score = float("inf")
-            best_candidate_row = row_df.copy()
-            best_method_name = "none"
-
-            for fn, name in zip(methods, method_names):
+            
+            # Находим реальные NaN позиции (которые нужно интерполировать)
+            real_nan_mask = row.isna()
+            
+            # Для валидации выбираем только часть известных точек
+            valid_indices = np.where(mask_notna)[0]
+            valid_values = row[valid_indices].values
+            
+            if len(valid_indices) < 4:
+                # Мало данных для валидации - используем linear
                 try:
-                    candidate = fn(row_df.copy())  # метод возвращает DataFrame
-                    # валидация результата
-                    if candidate is None or not isinstance(candidate, pd.DataFrame):
-                        raise ValueError(f"{name} вернул некорректный результат")
-
-                    # привести форму к исходной строке
-                    if candidate.shape != row_df.shape:
-                        candidate = candidate.reindex_like(row_df)
-
-                    stats_new = self.calculate_statistics_modified(candidate)
-                    if not stats_new:
-                        raise ValueError(f"Не удалось вычислить статистику для метода {name}")
-
-                    total_score = 0.0
-                    eps = 1e-8
-                    for r_key in stats_orig.keys():
-                        orig = stats_orig[r_key]
-                        filled = stats_new.get(r_key, {})
-
-                        mean_diff = abs((filled.get("Среднее", 0) or 0) - (orig.get("Среднее", 0) or 0)) / (abs(orig.get("Среднее", 0) or 0) + eps)
-                        std_diff = abs((filled.get("Ст. откл.", 0) or 0) - (orig.get("Ст. откл.", 0) or 0)) / (abs(orig.get("Ст. откл.", 0) or 0) + eps)
-                        smooth_diff = abs((filled.get("Локальная вариативность", 0) or 0) - (orig.get("Локальная вариативность", 0) or 0)) / ((orig.get("Локальная вариативность", eps) or eps) + eps)
-                        curvature_diff = abs((filled.get("Локальная кривизна", 0) or 0) - (orig.get("Локальная кривизна", 0) or 0)) / ((orig.get("Локальная кривизна", eps) or eps) + eps)
-
-                        total_score += mean_diff + std_diff + smooth_diff + curvature_diff
-
-                    total_score /= max(1, len(stats_orig))
-
-                    if total_score < best_score:
-                        best_score = total_score
-                        best_candidate_row = candidate.copy()
-                        best_method_name = name
-
-                except Exception as e:
-                    print(f"⚠️ Метод '{name}' пропущен для строки {idx}: {e}")
+                    interpolated = self.interpolate_linear(pd.DataFrame([row]))
+                    df_result.loc[idx] = interpolated.iloc[0].values
+                    self.best_methods_interpolation[idx] = "linear"
+                except:
+                    df_result.loc[idx] = row.values
+                    self.best_methods_interpolation[idx] = "none"
+                continue
+            
+            # Выбираем тестовые точки из не Nan
+            # Исключаем первую и последнюю известную точку
+            if len(valid_indices) > 3:
+                candidate_test_indices = valid_indices[1:-1]  # без первой и последней
+                candidate_test_values = valid_values[1:-1]
+            else:
+                candidate_test_indices = valid_indices
+                candidate_test_values = valid_values
+            
+            # Выбираем 30% для тестирования (минимум 2)
+            n_test = max(2, int(len(candidate_test_indices) * 0.3))
+            if n_test < len(candidate_test_indices):
+                test_idx_positions = np.random.choice(
+                    range(len(candidate_test_indices)), 
+                    size=n_test, 
+                    replace=False
+                )
+                test_positions = candidate_test_indices[test_idx_positions]
+                true_test_values = candidate_test_values[test_idx_positions]
+            else:
+                test_positions = candidate_test_indices
+                true_test_values = candidate_test_values
+            
+            # Создаем тестовый ряд
+            test_row = row.copy()
+            test_row.iloc[test_positions] = np.nan  # скрываем выбранные точки
+            
+            best_score = float('inf')
+            best_method = "linear"
+            
+            # Тестируем методы на искусственных пропусках
+            for method_func, method_name in zip(methods, method_names):
+                try:
+                    # Проверяем требования метода
+                    available_points = mask_notna.sum() - len(test_positions)
+                    
+                    if method_name in ['quadratic', 'cubic', 'spline2', 'spline3']:
+                        order_needed = 3 if method_name in ['cubic', 'spline3'] else 2
+                        if available_points < order_needed + 1:
+                            continue
+                    
+                    # Применяем метод
+                    test_df = pd.DataFrame([test_row])
+                    interpolated_test = method_func(test_df)
+                    
+                    if interpolated_test is None or interpolated_test.empty:
+                        continue
+                    
+                    # Извлекаем предсказания для скрытых точек
+                    pred_values = []
+                    valid_predictions = True
+                    
+                    for pos in test_positions:
+                        pred = interpolated_test.iloc[0, pos]
+                        if pd.isna(pred):
+                            valid_predictions = False
+                            break
+                        pred_values.append(pred)
+                    
+                    if not valid_predictions or len(pred_values) != len(true_test_values):
+                        continue
+                    
+                    # Вычисляем метрики
+                    mae = np.mean(np.abs(np.array(pred_values) - np.array(true_test_values)))
+                    data_range = np.max(true_test_values) - np.min(true_test_values)
+                    
+                    if data_range > 0:
+                        mae_normalized = mae / data_range
+                    else:
+                        mae_normalized = mae
+                    
+                    if len(pred_values) > 1 and len(true_test_values) > 1:
+                        pred_diffs = np.diff(pred_values)
+                        true_diffs = np.diff(true_test_values)
+                        sign_match = np.mean(np.sign(pred_diffs) == np.sign(true_diffs))
+                    else:
+                        sign_match = 1.0
+                    
+                    score = mae_normalized + (1 - sign_match) * 0.5
+                    
+                    # Дополнительные проверки
+                    if method_name == 'nearest' and len(pred_values) > 1 and len(true_test_values) > 1:
+                        pred_var = np.var(pred_values)
+                        true_var = np.var(true_test_values)
+                        if true_var > 0 and pred_var > true_var * 2:
+                            score *= 1.2
+                    
+                    if score < best_score:
+                        best_score = score
+                        best_method = method_name
+                        
+                except Exception:
                     continue
-
+            
             try:
-                df_result.loc[idx] = best_candidate_row.iloc[0].values
+                row_to_interpolate = row.copy()
+                
+                row_df = pd.DataFrame([row_to_interpolate])
+                
+                if best_method == "linear":
+                    interpolated_row = self.interpolate_linear(row_df)
+                elif best_method == "quadratic":
+                    interpolated_row = self.interpolate_quadratic(row_df)
+                elif best_method == "cubic":
+                    interpolated_row = self.interpolate_cubic(row_df)
+                elif best_method == "nearest":
+                    interpolated_row = self.interpolate_nearest(row_df)
+                elif best_method == "spline2":
+                    interpolated_row = self.interpolate_spline2(row_df, order=2)
+                elif best_method == "spline3":
+                    interpolated_row = self.interpolate_spline3(row_df, order=3)
+                elif best_method == "pchip":
+                    interpolated_row = self.interpolate_pchip(row_df)
+                else:
+                    interpolated_row = self.interpolate_akima(row_df)
+                 
+                result_values = interpolated_row.iloc[0].values.copy()
+                
+                for i in valid_indices:
+                    result_values[i] = row.iloc[i]
+                
+                df_result.loc[idx] = result_values
+                self.best_methods_interpolation[idx] = best_method
+                
             except Exception:
-                df_result.loc[idx] = df_num.loc[idx].values
 
-            self.best_methods_interpolation[idx] = best_method_name
+                fallback_success = False
+                for fallback_method in ['linear', 'pchip', 'nearest']:
+                    try:
+                        row_df = pd.DataFrame([row])
+                        if fallback_method == 'linear':
+                            interpolated = self.interpolate_linear(row_df)
+                        elif fallback_method == 'pchip':
+                            interpolated = self.interpolate_pchip(row_df)
+                        else:
+                            interpolated = self.interpolate_nearest(row_df)
+                        
+                        if interpolated is not None:
 
+                            result_values = interpolated.iloc[0].values.copy()
+                            for i in valid_indices:
+                                result_values[i] = row.iloc[i]
+                            
+                            df_result.loc[idx] = result_values
+                            self.best_methods_interpolation[idx] = fallback_method
+                            fallback_success = True
+                            break
+                    except:
+                        continue
+                
+                if not fallback_success:
+                    df_result.loc[idx] = row.values
+                    self.best_methods_interpolation[idx] = "none"
+        
         self.df_updated = df_result.copy()
         return df_result
 
@@ -756,18 +800,6 @@ class AutoAugmentationTimeseries:
         if pd.isna(std) or std == 0:
             std = 1.0
         scale = (noise_level if noise_level is not None else 0.05) * std
-        noise = rng.normal(0, scale, size=len(s))
-        res = s.copy()
-        res = res + noise
-        return res
-
-    def _noise_jitter_normal_row(self, s: pd.Series, noise_level: Optional[float] = None, rng=None):
-        if rng is None:
-            rng = np.random.default_rng()
-        std = s.std(skipna=True)
-        if pd.isna(std) or std == 0:
-            std = 1.0
-        scale = (noise_level if noise_level is not None else 0.02) * std
         noise = rng.normal(0, scale, size=len(s))
         res = s.copy()
         res = res + noise
@@ -818,6 +850,69 @@ class AutoAugmentationTimeseries:
         res.iloc[idx] += noise
         return res
 
+    def _noise_markovian_row(self, s: pd.Series, transition_prob: float = 0.5, noise_std: float = 0.1, rng=None) -> pd.Series:
+
+        result = s.copy()
+        if rng is None:
+            rng = np.random.default_rng()
+        
+        if len(result) == 0 or result.isna().all():
+            return result
+        
+        data = result.values
+        noised_data = np.zeros_like(data)
+        
+        # Первое значение сохраняем или добавляем шум
+        if rng.random() < transition_prob:
+            noise = rng.normal(scale=noise_std)
+            noised_data[0] = data[0] + noise
+        else:
+            noised_data[0] = data[0]
+        
+        # Обрабатываем остальные значения
+        for i in range(1, len(data)):
+            if rng.random() < transition_prob:
+                noise = rng.normal(scale=noise_std)
+                noised_data[i] = noised_data[i-1] + noise
+            else:
+                noised_data[i] = data[i]
+        
+        result.iloc[:] = noised_data
+        return result
+
+    def _noise_smoothed_row(self, s: pd.Series, smoothing_factor: float = 0.5, noise_std: float = 0.1, rng=None) -> pd.Series:
+
+        result = s.copy()
+        if rng is None:
+            rng = np.random.default_rng()
+        
+        if len(result) == 0 or result.isna().all():
+            return result
+        
+        data = result.values
+        
+        # Используем скользящее среднее для сглаживания
+        window_length = max(3, int(len(data) * smoothing_factor))
+        if window_length % 2 == 0:
+            window_length += 1  # Делаем нечетным для savgol_filter
+        
+        window_length = min(window_length, len(data))
+        if window_length < 3:
+            # Слишком короткий ряд для сглаживания
+            smoothed_data = data
+        else:
+            try:
+                smoothed_data = signal.savgol_filter(data, window_length=window_length, polyorder=2)
+            except:
+                smoothed_data = data
+        
+        # Добавляем шум к сглаженным данным
+        noise = rng.normal(scale=noise_std, size=len(smoothed_data))
+        noised_data = smoothed_data + noise
+        
+        result.iloc[:] = noised_data
+        return result
+
     def add_noise(self, df: pd.DataFrame, noise_type: str = "jitter", noise_level: Optional[float] = None,
               outlier_fraction: float = 0.01,
               outlier_magnitude: float = 5.0,
@@ -826,11 +921,12 @@ class AutoAugmentationTimeseries:
         rng = np.random.default_rng(rng_seed)
 
         methods_map = {
-            "jitter_gauss": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_jitter_gauss_row(s, noise_level, rng)),
-            "jitter_normal": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_jitter_normal_row(s, noise_level, rng)),
-            "jitter_white": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_jitter_white_row(s, noise_level, rng)),
-            "jitter_multiplicative": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_multiplicative_row(s, noise_level, rng)),
-            "jitter_outliers": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_outliers_row(s, outlier_fraction, outlier_magnitude, rng))
+        "jitter_gauss": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_jitter_gauss_row(s, noise_level, rng=rng)),
+        "jitter_white": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_jitter_white_row(s, noise_level, rng=rng)),
+        "jitter_multiplicative": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_multiplicative_row(s, noise_level, rng=rng)),
+        "jitter_outliers": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_outliers_row(s, outlier_fraction, outlier_magnitude, rng=rng)),
+        "markovian": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_markovian_row(s, transition_prob=0.5, noise_std=0.1, rng=rng)),
+        "smoothed": lambda d: self._rowwise_apply_noise(d, lambda s: self._noise_smoothed_row(s, smoothing_factor=0.5, noise_std=0.1, rng=rng))
         }
 
         # если указан конкретный метод — оставить поведение прежним
@@ -847,18 +943,17 @@ class AutoAugmentationTimeseries:
 
         for idx in df_num.index:
             row_df = df_num.loc[[idx]].copy()
-            # если в строке нет значений (всё NaN) — просто копируем
             if not row_df.isna().any(axis=None):
-                # строка без пропусков — можно всё равно добавить шум, но по логике оригинала пропустим
-                # чтобы сохранить прежнее поведение, не меняем строку
+                
                 df_result.loc[idx] = row_df.iloc[0].values
                 self.best_methods_noise[idx] = "none"
                 continue
 
-            # статистики до добавления шума
             try:
+               
                 stats_orig = self.calculate_statistics(row_df)
             except Exception:
+                
                 df_result.loc[idx] = row_df.iloc[0].values
                 self.best_methods_noise[idx] = "none"
                 continue
@@ -866,23 +961,23 @@ class AutoAugmentationTimeseries:
             best_score = float("inf")
             best_candidate_row = row_df.copy()
             best_method_name = "none"
-
             for cand in candidates:
                 try:
-                    # применяем метод к одной строке (функции принимают DataFrame)
+
                     candidate_df = methods_map[cand](row_df.copy())
 
                     if candidate_df is None or not isinstance(candidate_df, pd.DataFrame):
+                        
                         raise ValueError(f"{cand} вернул некорректный результат")
 
                     if candidate_df.shape != row_df.shape:
+                        
                         candidate_df = candidate_df.reindex_like(row_df)
 
                     stats_new = self.calculate_statistics_modified(candidate_df)
                     if not stats_new:
                         raise ValueError(f"Не удалось вычислить статистику для метода {cand}")
 
-                    # вычисляем score
                     total_score = 0.0
                     eps = 1e-8
                     for r_key in stats_orig.keys():
@@ -964,23 +1059,19 @@ class AutoAugmentationTimeseries:
                 "spline3": lambda d: self.interpolate_spline3(d, order=3),
                 "pchip": self.interpolate_pchip,
                 "akima": self.interpolate_akima,
-                "kalman": self.interpolate_kalman,
                 "auto": self.interpolate_auto
             }
             fn = methods_map.get(method)
             if fn is None:
                 raise ValueError(f"Неизвестный метод интерполяции: {method}")
-            #df_modified  = fn(df_modified.copy())
-            #self.df_updated = df_modified.copy()
+          
             df_selected = _filter_selected(df_modified.copy())
             df_filled = fn(df_selected)
             df_modified.update(df_filled)
             self.df_updated = df_modified.copy()
 
         elif action == "jitter":
-            noise_type = method if method is not None else "jitter"
-            #df_modified = self.add_noise(df_modified.copy(), noise_type=noise_type)
-            #self.df_updated = df_modified.copy()
+            
             noise_type = method if method is not None else "jitter"
             df_selected = _filter_selected(df_modified.copy())
             df_noised = self.add_noise(df_selected.copy(), noise_type=noise_type)
@@ -989,16 +1080,60 @@ class AutoAugmentationTimeseries:
 
         elif action == "extrapolate":
             if self.counter == 0:
+                
                 self.counter += 1
                 self.fit_timegan(**kwargs)
+                self.direction = method
+                all_dates = pd.to_datetime(df_modified.columns)
+                if method in ["forward", "both"]:
+
+                    last_date = all_dates.max()
+                    existing_future_dates = [d for d in all_dates if d > last_date]
+                    if existing_future_dates:
+
+                        df_selected = _filter_selected(df_modified.copy())
+                        for idx in df_selected.index:
+                            row_series = df_selected.loc[idx]
+                            nan_in_extrapolated = row_series[existing_future_dates].isna()
+                            if nan_in_extrapolated.any():
+                
+                                last_valid_idx = row_series[:last_date].last_valid_index()
+                                if last_valid_idx:
+                                    last_valid_value = row_series[last_valid_idx]
+                                    df_modified.loc[idx, nan_in_extrapolated[nan_in_extrapolated].index] = last_valid_value
+                
+                if method in ["backward", "both"]:
+                    first_date = all_dates.min()
+                    existing_past_dates = [d for d in all_dates if d < first_date]
+                    
+                    if existing_past_dates:
+                        df_selected = _filter_selected(df_modified.copy())
+                        for idx in df_selected.index:
+                            row_series = df_selected.loc[idx]
+                            nan_in_extrapolated = row_series[existing_past_dates].isna()
+                            
+                            if nan_in_extrapolated.any():
+                                first_valid_idx = row_series[first_date:].first_valid_index()
+                                if first_valid_idx:
+                                    first_valid_value = row_series[first_valid_idx]
+                                    df_modified.loc[idx, nan_in_extrapolated[nan_in_extrapolated].index] = first_valid_value
+                
+                df_extrapolated = self.predict_timegan(**kwargs)
+                
+                for idx in df_extrapolated.index:
+                    for date in df_extrapolated.columns:
+                        if date in df_modified.columns:
+                            if pd.isna(df_modified.at[idx, date]):
+                                df_modified.at[idx, date] = df_extrapolated.at[idx, date]
+                            elif idx in (self.selected_features or []):
+                                df_modified.at[idx, date] = df_extrapolated.at[idx, date]
+                        else:
+                            if date not in df_modified.columns:
+                                df_modified[date] = np.nan
+                            df_modified.at[idx, date] = df_extrapolated.at[idx, date]
             
-            self.direction = method
-            #df_modified = self.predict_timegan(**kwargs)
-            #self.df_updated = df_modified.copy()
-            df_selected = _filter_selected(df_modified.copy())
-            df_extrapolated = self.predict_timegan(**kwargs)
-            df_modified.update(df_extrapolated)
-            self.df_updated = df_modified.copy()
+                df_modified = df_modified.reindex(sorted(df_modified.columns), axis=1)
+                self.df_updated = df_modified.copy()
 
         stats_df = pd.DataFrame.from_dict(self.calculate_statistics_modified(df_modified), orient='index')
         result_html["df_modified_html"] = df_modified.to_html(classes="dataframe table table-sm", border=0)
