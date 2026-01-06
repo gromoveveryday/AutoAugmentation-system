@@ -401,27 +401,6 @@ class AutoAugmentationTimeseries:
         self.n_missing_total = total_missing
         return stats_all
 
-   # def _estimate_noise_variances(self, series: pd.Series, A: float):
-   #     """
-   #     Оценка дисперсий шумов процесса и измерения.
-    #    """
-    #    valid_data = series.dropna().values
-    #    
-    #    if len(valid_data) < 2:
-    #        return 1e-5, 1e-2
-    #    
-        # Q - дисперсия шума процесса
-    #    if len(valid_data) > 1:
-    #        residuals = valid_data[1:] - A * valid_data[:-1]
-    #        Q = np.var(residuals) if len(residuals) > 0 else 1e-5
-    #    else:
-     #       Q = 1e-5
-        
-     #   # R - дисперсия шума измерения (оцениваем по вариации данных)
-   #     R = np.var(valid_data) * 0.1 if len(valid_data) > 1 else 1e-2
-        
-    #    return max(Q, 1e-10), max(R, 1e-10)
-
     def _rowwise_interpolate(self, df: pd.DataFrame, method: str, order: int = None) -> pd.DataFrame:
         df_num = df.apply(pd.to_numeric, errors="coerce")
         df_filled = pd.DataFrame(index=df_num.index, columns=df_num.columns, dtype=float)
