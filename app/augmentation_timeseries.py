@@ -5,10 +5,13 @@ from statsmodels.tsa.stattools import adfuller
 import pandas as pd
 import numpy as np
 import torch
-from torch import nn
+import torch.nn as nn
+import torch.nn.init as init
+import torch.optim as optim
 from sklearn.preprocessing import MinMaxScaler
 import os
 import warnings
+import random
 
 warnings.filterwarnings("ignore")
 
@@ -17,23 +20,28 @@ class AutoAugmentationTimeseries:
     def __init__(self, df_or_path, freq='D'):
         self.selected_features: list = []
         self.freq = freq
-        self.df_input = self._load_and_standardize(df_or_path)   # ← ключевой вызов
+        self.df_input = self._load_and_standardize(df_or_path) 
         self.df_input = self.df_input.apply(pd.to_numeric, errors="coerce")
         self.stats: Optional[Dict] = None
         self.n_missing_total: Optional[int] = None
         self.df_updated: Optional[pd.DataFrame] = None
         self.model = None
-        self.pred_len = 30
+        self.pred_len = 80
         self.timegan_model = None
         self.scaler = None
-        self.seq_len = 30
-        self.hidden_dim = 64
-        self.num_layers = 2
-        self.epochs_auto = 500
-        self.epochs_super = 500
-        self.epochs_gan = 500
-        self.batch_size = 32
+        self.seq_len = 24
+        self.hidden_dim = 24
+        self.z_dim = self.df_input.shape[0]
+        self.num_layers = 3
+        self.epochs = 350
+        self.batch_size = 128
         self.alpha_teacher = 0.7
+        self.beta1 = 0.9
+        self.lr = 0.001
+        self.w_gamma = 1
+        self.w_es = 0.1
+        self.w_e0 = 10
+        self.w_g = 100
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.direction=None
         torch.manual_seed(42)
@@ -41,6 +49,7 @@ class AutoAugmentationTimeseries:
         self.df_input.columns = pd.to_datetime(self.df_input.columns)
         self.df_updated = self.df_input
         self.counter = 0
+        self.resume = ''
     
     def _load_and_standardize(self, df_or_path) -> pd.DataFrame:
        
@@ -70,7 +79,6 @@ class AutoAugmentationTimeseries:
                 pass
 
         raise ValueError(f"Не удалось прочитать CSV: {path}")
-
 
     def _standardize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         # Формат "factor, date, value" (long)
@@ -118,13 +126,39 @@ class AutoAugmentationTimeseries:
     def fit_timegan(self):
         df = self.df_updated.T
         df.index = pd.to_datetime(df.index)
-
-        # Масштабирование
+        numerator = df.values - np.min(df.values, axis=0)
+        denominator = np.max(df.values, axis=0) - np.min(df.values, axis=0)
+        norm_data = numerator / (denominator + 1e-7)
+        temp_data = []
+        seq_len = self.seq_len
+    
+        for i in range(0, len(norm_data) - seq_len):
+            sequence = norm_data[i:i + seq_len]
+            temp_data.append(sequence)
+        
+        idx = np.random.permutation(len(temp_data))
+        ori_data = []
+        for i in range(len(temp_data)):
+            ori_data.append(temp_data[idx[i]])
         self.scaler = MinMaxScaler()
         data_scaled = self.scaler.fit_transform(df.values)
         self.data_tensor = torch.tensor(data_scaled, dtype=torch.float32).to(self.device)
         self.data_tensor = self.data_tensor
         self.n_features = df.shape[1]
+        z_dim = self.z_dim
+        hidden_dim = self.hidden_dim
+        num_layer = self.num_layers
+        batch_size = self.batch_size
+        iteration = self.epochs
+        beta1 = self.beta1
+        lr = self.lr
+        resume = self.resume
+        w_gamma= self.w_gamma
+        w_es = self.w_es
+        w_e0 = self.w_e0
+        w_g = self.w_g
+        isTrain = True
+        device = self.device
 
         # Создание окон
         def create_sequences(data, seq_len):
@@ -132,131 +166,450 @@ class AutoAugmentationTimeseries:
             for i in range(len(data) - seq_len):
                 X.append(data[i:i + seq_len])
             return torch.stack(X)
+        
+        def _weights_init(m):
+            classname = m.__class__.__name__
+            if isinstance(m, nn.Linear):
+                init.xavier_uniform_(m.weight)
+                m.bias.data.fill_(0)
+            elif classname.find('Conv') != -1:
+                m.weight.data.normal_(0.0, 0.02)
+            elif classname.find('Norm') != -1:
+                m.weight.data.normal_(1.0, 0.02)
+                m.bias.data.fill_(0)
+            elif classname.find("GRU") != -1:
+                for name,param in m.named_parameters():
+                    if 'weight_ih' in name:
+                        init.xavier_uniform_(param.data)
+                    elif 'weight_hh' in name:
+                        init.orthogonal_(param.data)
+                    elif 'bias' in name:
+                        param.data.fill_(0)
 
-        train_data = create_sequences(self.data_tensor, self.seq_len)
+        def batch_generator(data, time, batch_size):
+            no = len(data)
+            idx = np.random.permutation(no)
+            train_idx = idx[:batch_size]
+            X_mb = list(data[i] for i in train_idx)
+            T_mb = list(time[i] for i in train_idx)
+            return X_mb, T_mb
 
-        # Сборка модели
-        class GRUWithLN(nn.Module):
-            def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.1):
-                super().__init__()
-                self.rnn = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout)
-                self.ln = nn.LayerNorm(hidden_dim)
-            def forward(self, x):
-                h, _ = self.rnn(x)
-                return self.ln(h)
+        def extract_time (data):
+            time = list()
+            max_seq_len = 0
+            for i in range(len(data)):
+                max_seq_len = max(max_seq_len, len(data[i][:,0]))
+                time.append(len(data[i][:,0]))
+                
+            return time, max_seq_len
 
-        class Embedder(nn.Module):
-            def __init__(self, input_dim, hidden_dim, num_layers):
-                super().__init__()
-                self.gru_ln = GRUWithLN(input_dim, hidden_dim, num_layers)
+        def random_generator (batch_size, z_dim, T_mb, max_seq_len):
+            Z_mb = list()
+            for i in range(batch_size):
+                temp = np.zeros([max_seq_len, z_dim])
+                temp_Z = np.random.uniform(0., 1, [T_mb[i], z_dim])
+                temp[:T_mb[i],:] = temp_Z
+                Z_mb.append(temp_Z)
+
+            return Z_mb
+
+        def NormMinMax(data):
+            min_val = np.min(np.min(data, axis=0), axis=0)
+            data = data - min_val
+            max_val = np.max(np.max(data, axis=0), axis=0)
+            norm_data = data / (max_val + 1e-7)
+            return norm_data, min_val, max_val
+
+        class Encoder(nn.Module):
+            def __init__(self):
+                super(Encoder, self).__init__()
+                self.rnn = nn.GRU(input_size=z_dim, hidden_size=hidden_dim, num_layers=num_layer)
+              # self.norm = nn.BatchNorm1d(hidden_dim)
                 self.fc = nn.Linear(hidden_dim, hidden_dim)
-            def forward(self, x):
-                return torch.tanh(self.fc(self.gru_ln(x)))
+                self.sigmoid = nn.Sigmoid()
+                self.apply(_weights_init)
+
+            def forward(self, input, sigmoid=True):
+                e_outputs, _ = self.rnn(input)
+                H = self.fc(e_outputs)
+                if sigmoid:
+                    H = self.sigmoid(H)
+                return H
 
         class Recovery(nn.Module):
-            def __init__(self, hidden_dim, output_dim):
-                super().__init__()
-                self.fc = nn.Linear(hidden_dim, output_dim)
-            def forward(self, h):
-                return torch.sigmoid(self.fc(h))
+            def __init__(self):
+                super(Recovery, self).__init__()
+                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=z_dim, num_layers=num_layer)
+             #  self.norm = nn.BatchNorm1d(z_dim)
+                self.fc = nn.Linear(z_dim, z_dim)
+                self.sigmoid = nn.Sigmoid()
+                self.apply(_weights_init)
+
+            def forward(self, input, sigmoid=True):
+                r_outputs, _ = self.rnn(input)
+                X_tilde = self.fc(r_outputs)
+                if sigmoid:
+                    X_tilde = self.sigmoid(X_tilde)
+                return X_tilde
+        
+        class Supervisor(nn.Module):
+            def __init__(self):
+                super(Supervisor, self).__init__()
+                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layer)
+            #   self.norm = nn.LayerNorm(hidden_dim)
+                self.fc = nn.Linear(hidden_dim, hidden_dim)
+                self.sigmoid = nn.Sigmoid()
+                self.apply(_weights_init)
+
+            def forward(self, input, sigmoid=True):
+                s_outputs, _ = self.rnn(input)
+            #   s_outputs = self.norm(s_outputs)
+                S = self.fc(s_outputs)
+                if sigmoid:
+                    S = self.sigmoid(S)
+                return S
 
         class Generator(nn.Module):
-            def __init__(self, z_dim, hidden_dim, num_layers):
-                super().__init__()
-                self.gru_ln = GRUWithLN(z_dim, hidden_dim, num_layers)
+            def __init__(self):
+                super(Generator, self).__init__()
+                self.rnn = nn.GRU(input_size=z_dim, hidden_size=hidden_dim, num_layers=num_layer)
+            #   self.norm = nn.LayerNorm(hidden_dim)
                 self.fc = nn.Linear(hidden_dim, hidden_dim)
-            def forward(self, z):
-                return torch.tanh(self.fc(self.gru_ln(z)))
+                self.sigmoid = nn.Sigmoid()
+                self.apply(_weights_init)
 
-        class Supervisor(nn.Module):
-            def __init__(self, hidden_dim, num_layers):
-                super().__init__()
-                self.gru_ln = GRUWithLN(hidden_dim, hidden_dim, num_layers)
-            def forward(self, h):
-                return self.gru_ln(h)
-
+            def forward(self, input, sigmoid=True):
+                g_outputs, _ = self.rnn(input)
+            #   g_outputs = self.norm(g_outputs)
+                E = self.fc(g_outputs)
+                if sigmoid:
+                    E = self.sigmoid(E)
+                return E
+        
         class Discriminator(nn.Module):
-            def __init__(self, hidden_dim, num_layers):
-                super().__init__()
-                self.gru_ln = GRUWithLN(hidden_dim, hidden_dim, num_layers)
-                self.fc = nn.Linear(hidden_dim, 1)
-            def forward(self, h):
-                return torch.sigmoid(self.fc(self.gru_ln(h)))
+            def __init__(self):
+                super(Discriminator, self).__init__()
+                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layer)
+            #   self.norm = nn.LayerNorm(hidden_dim)
+                self.fc = nn.Linear(hidden_dim, hidden_dim)
+                self.sigmoid = nn.Sigmoid()
+                self.apply(_weights_init)
 
-        # Объявление 
-        embedder = Embedder(self.n_features, self.hidden_dim, self.num_layers).to(self.device)
-        recovery = Recovery(self.hidden_dim, self.n_features).to(self.device)
-        generator = Generator(self.hidden_dim, self.hidden_dim, self.num_layers).to(self.device)
-        supervisor = Supervisor(self.hidden_dim, self.num_layers).to(self.device)
-        discriminator = Discriminator(self.hidden_dim, self.num_layers).to(self.device)
+            def forward(self, input, sigmoid=True):
+                d_outputs, _ = self.rnn(input)
+                Y_hat = self.fc(d_outputs)
+                if sigmoid:
+                    Y_hat = self.sigmoid(Y_hat)
+                return Y_hat
+        
+        class BaseModel():
+            def __init__(self, ori_data):
+                self.seed(-1)
+                self.ori_data, self.min_val, self.max_val = NormMinMax(ori_data)
+                self.ori_time, self.max_seq_len = extract_time(ori_data)
+                self.data_num, _, _ = np.asarray(ori_data).shape  
+                self.trn_dir = os.path.join('./output', 'experiment_name', 'train')
+                self.tst_dir = os.path.join('./output' 'experiment_name', 'test')
+                self.device = torch.device("cpu")
 
-        loss_fn = nn.MSELoss()
+            def seed(self, seed_value):
+                if seed_value == -1:
+                    return
 
-        opt_auto = torch.optim.Adam(list(embedder.parameters()) + list(recovery.parameters()), lr=1e-3)
-        opt_super = torch.optim.Adam(list(supervisor.parameters()) + list(embedder.parameters()), lr=1e-3)
-        opt_gen = torch.optim.Adam(list(generator.parameters()) + list(supervisor.parameters()), lr=1e-3)
-        opt_disc = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
+                random.seed(seed_value)
+                torch.manual_seed(seed_value)
+                torch.cuda.manual_seed_all(seed_value)
+                np.random.seed(seed_value)
+                torch.backends.cudnn.deterministic = True
 
-        # Обучение автоэнкодера
-        for epoch in range(self.epochs_auto):
-            idx = torch.randint(0, len(train_data), (self.batch_size,))
-            X = train_data[idx]
+            def save_weights(self, epoch):
+                weight_dir = os.path.join('./output', 'experiment_name', 'train', 'weights')
+                if not os.path.exists(weight_dir): 
+                    os.makedirs(weight_dir)
 
-            opt_auto.zero_grad()
-            H = embedder(X)
-            X_tilde = recovery(H)
-            loss_auto = loss_fn(X_tilde, X)
-            loss_auto.backward()
-            opt_auto.step()
+                torch.save({'epoch': epoch + 1, 'state_dict': self.nete.state_dict()},
+                            '%s/netE.pth' % (weight_dir))
+                torch.save({'epoch': epoch + 1, 'state_dict': self.netr.state_dict()},
+                            '%s/netR.pth' % (weight_dir))
+                torch.save({'epoch': epoch + 1, 'state_dict': self.netg.state_dict()},
+                            '%s/netG.pth' % (weight_dir))
+                torch.save({'epoch': epoch + 1, 'state_dict': self.netd.state_dict()},
+                            '%s/netD.pth' % (weight_dir))
+                torch.save({'epoch': epoch + 1, 'state_dict': self.nets.state_dict()},
+                            '%s/netS.pth' % (weight_dir))
 
-            if epoch % 100 == 0:
-                print(f"Auto Epoch {epoch:04d}: recon_loss={loss_auto.item():.6f}")
+            def train_one_iter_er(self):
+                self.nete.train()
+                self.netr.train()
+                # set mini-batch
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+                # train encoder & decoder
+                self.optimize_params_er()
 
-        # Обучение супервизора
-        for epoch in range(self.epochs_super):
-            idx = torch.randint(0, len(train_data), (self.batch_size,))
-            X = train_data[idx]
-            opt_super.zero_grad()
-            H = embedder(X).detach()
-            H_hat = supervisor(H)
-            loss_sup = loss_fn(H_hat[:, :-1, :], H[:, 1:, :])
-            loss_sup.backward()
-            opt_super.step()
+            def train_one_iter_er_(self):
+                self.nete.train()
+                self.netr.train()
+                # set mini-batch
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+                # train encoder & decoder
+                self.optimize_params_er_()
+            
+            def train_one_iter_s(self):
+                #self.nete.eval()
+                self.nets.train()
+                # set mini-batch
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+                # train superviser
+                self.optimize_params_s()
 
-            if epoch % 100 == 0:
-                print(f"Super Epoch {epoch:04d}: sup_loss={loss_sup.item():.6f}")
+            def train_one_iter_g(self):
+                self.netg.train()
+                # set mini-batch
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+                self.Z = random_generator(batch_size, z_dim, self.T, self.max_seq_len)
+                # train superviser
+                self.optimize_params_g()
 
-        # Обучение генератора и дискриминатор
-        for epoch in range(self.epochs_gan):
-            w_super = min(1.0, 0.01 + epoch / self.epochs_gan) # Динамическое изменение весов похожее на оригинальном исполнеии (но очень примитивное)
-            w_adv = min(1.0, 0.01 + epoch / self.epochs_gan)
+            def train_one_iter_d(self):
+                self.netd.train()
+                # set mini-batch
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+                self.Z = random_generator(batch_size, z_dim, self.T, self.max_seq_len)
+                # train superviser
+                self.optimize_params_d()
 
-            idx = torch.randint(0, len(train_data), (self.batch_size,))
-            X = train_data[idx]
-            H_real = embedder(X).detach()
+            def train(self):
+                for iter in range(iteration):
+                # Train for one iter
+                    self.train_one_iter_er()
+                    print('Encoder training step: '+ str(iter) + '/' + str(iteration))
 
-            opt_gen.zero_grad()
-            Z = torch.randn_like(H_real)
-            H_fake = generator(Z)
-            H_fake_s = supervisor(H_fake)
-            Y_fake = discriminator(H_fake)
-            loss_gan = torch.mean((Y_fake - 1) ** 2)
-            loss_sup_gen = loss_fn(H_fake_s[:, :-1, :], H_fake[:, 1:, :])
-            total_gen_loss = w_adv * loss_gan + w_super * loss_sup_gen
-            total_gen_loss.backward()
-            opt_gen.step()
+                for iter in range(iteration):
+                # Train for one iter
+                    self.train_one_iter_s()
+                    print('Superviser training step: '+ str(iter) + '/' + str(iteration))
 
-            opt_disc.zero_grad()
-            Y_real = discriminator(H_real)
-            Y_fake_det = discriminator(H_fake.detach())
-            loss_disc = torch.mean((Y_real - 1) ** 2) + torch.mean(Y_fake_det ** 2)
-            loss_disc.backward()
-            opt_disc.step()
+                for iter in range(iteration):
+                # Train for one iter
+                    for kk in range(2):
+                        self.train_one_iter_g()
+                        self.train_one_iter_er_()
 
-            if epoch % 100 == 0:
-                print(f"GAN Epoch {epoch:04d}: gen_loss={total_gen_loss.item():.6f}, disc_loss={loss_disc.item():.6f}")
+                    self.train_one_iter_d()
+                    print('Superviser training step: '+ str(iter) + '/' + str(iteration))
 
-        self.model = (embedder, recovery, generator, supervisor, discriminator)
+                self.save_weights(iteration)
+                self.generated_data = self.generation(batch_size)
+                print('Finish Synthetic Data Generation')
+
+            def generation(self, num_samples, mean = 0.0, std = 1.0):
+                if num_samples == 0:
+                    return None, None
+                ## Synthetic data generation
+                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
+                self.Z = random_generator(num_samples, z_dim, self.T, self.max_seq_len)
+                self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
+                self.E_hat = self.netg(self.Z)    
+                self.H_hat = self.nets(self.E_hat)  
+                generated_data_curr = self.netr(self.H_hat).cpu().detach().numpy()  
+                generated_data = list()
+                for i in range(num_samples):
+                    temp = generated_data_curr[i, :self.ori_time[i], :]
+                    generated_data.append(temp)
+                
+                # Renormalization
+                generated_data = generated_data * self.max_val
+                generated_data = generated_data + self.min_val
+                return generated_data
+            
+        class TimeGAN(BaseModel):
+            @property
+            def name(self):
+                return 'TimeGAN'
+
+            def __init__(self, ori_data):
+                super(TimeGAN, self).__init__(ori_data)
+                # -- Misc attributes
+                self.epoch = 0
+                self.times = []
+                self.total_steps = 0
+                # Create and initialize networks.
+                self.nete = Encoder().to(device)
+                self.netr = Recovery().to(device)
+                self.netg = Generator().to(device)
+                self.netd = Discriminator().to(device)
+                self.nets = Supervisor().to(device)
+
+                if resume != '':
+                    print("\nLoading pre-trained networks.")
+                    self.iter = torch.load(os.path.join(resume, 'netG.pth'))['epoch']
+                    self.nete.load_state_dict(torch.load(os.path.join(resume, 'netE.pth'))['state_dict'])
+                    self.netr.load_state_dict(torch.load(os.path.join(resume, 'netR.pth'))['state_dict'])
+                    self.netg.load_state_dict(torch.load(os.path.join(resume, 'netG.pth'))['state_dict'])
+                    self.netd.load_state_dict(torch.load(os.path.join(resume, 'netD.pth'))['state_dict'])
+                    self.nets.load_state_dict(torch.load(os.path.join(resume, 'netS.pth'))['state_dict'])
+                    print("\tDone.\n")
+
+               # loss
+                self.l_mse = nn.MSELoss()
+                self.l_r = nn.L1Loss()
+                self.l_bce = nn.BCELoss()
+
+                # Setup optimizer
+                if isTrain:
+                    self.nete.train()
+                    self.netr.train()
+                    self.netg.train()
+                    self.netd.train()
+                    self.nets.train()
+                    self.optimizer_e = optim.Adam(self.nete.parameters(), lr=lr, betas=(beta1, 0.999))
+                    self.optimizer_r = optim.Adam(self.netr.parameters(), lr=lr, betas=(beta1, 0.999))
+                    self.optimizer_g = optim.Adam(self.netg.parameters(), lr=lr, betas=(beta1, 0.999))
+                    self.optimizer_d = optim.Adam(self.netd.parameters(), lr=lr, betas=(beta1, 0.999))
+                    self.optimizer_s = optim.Adam(self.nets.parameters(), lr=lr, betas=(beta1, 0.999))
+
+            def forward_e(self):
+                self.H = self.nete(self.X)
+
+            def forward_er(self):
+                self.H = self.nete(self.X)
+                self.X_tilde = self.netr(self.H)
+
+            def forward_g(self):
+                self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
+                self.E_hat = self.netg(self.Z)
+
+            def forward_dg(self):
+                self.Y_fake = self.netd(self.H_hat)
+                self.Y_fake_e = self.netd(self.E_hat)
+
+            def forward_rg(self):
+                self.X_hat = self.netr(self.H_hat)
+
+            def forward_s(self):
+                self.H_supervise = self.nets(self.H)
+
+            def forward_sg(self):
+                self.H_hat = self.nets(self.E_hat)
+
+            def forward_d(self):
+              
+                self.Y_real = self.netd(self.H)
+                self.Y_fake = self.netd(self.H_hat)
+                self.Y_fake_e = self.netd(self.E_hat)
+
+            def backward_er(self):
+                self.err_er = self.l_mse(self.X_tilde, self.X)
+                self.err_er.backward(retain_graph=True)
+                print("Loss: ", self.err_er)
+
+            def backward_er_(self):
+                self.err_er_ = self.l_mse(self.X_tilde, self.X) 
+                self.err_s = self.l_mse(self.H_supervise[:,:-1,:], self.H[:,1:,:])
+                self.err_er = 10 * torch.sqrt(self.err_er_) + 0.1 * self.err_s
+                self.err_er.backward(retain_graph=True)
+
+            def backward_g(self):
+                self.err_g_U = self.l_bce(self.Y_fake, torch.ones_like(self.Y_fake))
+                self.err_g_U_e = self.l_bce(self.Y_fake_e, torch.ones_like(self.Y_fake_e))
+                self.err_g_V1 = torch.mean(torch.abs(torch.sqrt(torch.std(self.X_hat,[0])[1] + 1e-6) - torch.sqrt(torch.std(self.X,[0])[1] + 1e-6)))   # |a^2 - b^2|
+                self.err_g_V2 = torch.mean(torch.abs((torch.mean(self.X_hat,[0])[0]) - (torch.mean(self.X,[0])[0])))  # |a - b|
+                self.err_s = self.l_mse(self.H_supervise[:,:-1,:], self.H[:,1:,:])
+                self.err_g = self.err_g_U + \
+                            self.err_g_U_e * w_gamma + \
+                            self.err_g_V1 * w_g + \
+                            self.err_g_V2 * w_g + \
+                            torch.sqrt(self.err_s) 
+                self.err_g.backward(retain_graph=True)
+                print("Loss G: ", self.err_g)
+
+            def backward_s(self):
+                self.err_s = self.l_mse(self.H[:,1:,:], self.H_supervise[:,:-1,:])
+                self.err_s.backward(retain_graph=True)
+                print("Loss S: ", self.err_s)
+
+            def backward_d(self):
+                self.err_d_real = self.l_bce(self.Y_real, torch.ones_like(self.Y_real))
+                self.err_d_fake = self.l_bce(self.Y_fake, torch.zeros_like(self.Y_fake))
+                self.err_d_fake_e = self.l_bce(self.Y_fake_e, torch.zeros_like(self.Y_fake_e))
+                self.err_d = self.err_d_real + \
+                            self.err_d_fake + \
+                            self.err_d_fake_e * w_gamma
+                if self.err_d > 0.15:
+                    self.err_d.backward(retain_graph=True)
+
+            def optimize_params_er(self):
+                # Forward-pass
+                self.forward_er()
+                # Backward-pass
+                # nete & netr
+                self.optimizer_e.zero_grad()
+                self.optimizer_r.zero_grad()
+                self.backward_er()
+                self.optimizer_e.step()
+                self.optimizer_r.step()
+
+            def optimize_params_er_(self):
+                # Forward-pass
+                self.forward_er()
+                self.forward_s()
+                # Backward-pass
+                # nete & netr
+                self.optimizer_e.zero_grad()
+                self.optimizer_r.zero_grad()
+                self.backward_er_()
+                self.optimizer_e.step()
+                self.optimizer_r.step()
+
+            def optimize_params_s(self):
+                # Forward-pass
+                self.forward_e()
+                self.forward_s()
+                # Backward-pass
+                # nets
+                self.optimizer_s.zero_grad()
+                self.backward_s()
+                self.optimizer_s.step()
+
+            def optimize_params_g(self):
+                # Forward-pass
+                self.forward_e()
+                self.forward_s()
+                self.forward_g()
+                self.forward_sg()
+                self.forward_rg()
+                self.forward_dg()
+
+                # Backward-pass
+                # nets
+                self.optimizer_g.zero_grad()
+                self.optimizer_s.zero_grad()
+                self.backward_g()
+                self.optimizer_g.step()
+                self.optimizer_s.step()
+
+            def optimize_params_d(self):
+                # Forward-pass
+                self.forward_e()
+                self.forward_g()
+                self.forward_sg()
+                self.forward_d()
+                self.forward_dg()
+
+                # Backward-pass
+                # nets
+                self.optimizer_d.zero_grad()
+                self.backward_d()
+                self.optimizer_d.step()
+        
+        self.model = TimeGAN(ori_data)
+        self.model.train()   
+    #    self.model = (embedder, recovery, generator, supervisor, discriminator)
     
     def _extend_datetime_index(self):
         if not isinstance(self.df_updated.T.index, pd.DatetimeIndex) or len(self.df_updated.T.index) < 2:
@@ -264,86 +617,179 @@ class AutoAugmentationTimeseries:
 
         df_extended = self.df_updated.T.copy()
         step = self.df_updated.T.index[1] - self.df_updated.T.index[0]
-
+        
+        # Используем self.direction для определения количества шагов
+        direction = getattr(self, 'direction', 'forward')
+        pred_len = getattr(self, 'pred_len', 10)  # значение по умолчанию
+        
         # Forward индексы
-        if self.direction in ["forward", "both"]:
+        forward_idx = []
+        if direction in ["forward", "both"]:
             last_idx = df_extended.index[-1]
-            self.n_forward = self.pred_len if self.direction == "forward" else self.pred_len // 2 + self.pred_len % 2
-            self.forward_idx = [last_idx + step*(i+1) for i in range(int(self.n_forward))]
-        else:
-            self.forward_idx = []
-
+            n_forward = pred_len if direction == "forward" else pred_len // 2 + pred_len % 2
+            forward_idx = [last_idx + step*(i+1) for i in range(int(n_forward))]
+        
         # Backward индексы
-        if self.direction in ["backward", "both"]:
+        backward_idx = []
+        if direction in ["backward", "both"]:
             first_idx = df_extended.index[0]
-            self.n_backward = self.pred_len if self.direction == "backward" else self.pred_len // 2
-            self.backward_idx = [first_idx - step*(i+1) for i in reversed(range(int(self.n_backward)))]
-        else:
-            self.backward_idx = []
+            n_backward = pred_len if direction == "backward" else pred_len // 2
+            backward_idx = [first_idx - step*(i+1) for i in reversed(range(int(n_backward)))]
 
         # Расширяем df, чтобы можно было вставить прогнозы
-        for idx in self.backward_idx + self.forward_idx:
+        for idx in backward_idx + forward_idx:
             if idx not in df_extended.index:
                 df_extended.loc[idx] = np.nan
 
-        return df_extended, self.forward_idx, self.backward_idx
+        return df_extended, forward_idx, backward_idx
 
     def predict_timegan(self, **kwargs):
         if self.model is None:
             raise RuntimeError("Модель TimeGAN не обучена. Сначала вызови fit_timegan()")
 
-        embedder, recovery, generator, supervisor, _ = self.model
-        embedder.eval(); recovery.eval(); generator.eval(); supervisor.eval()
-        df_extended, self.forward_idx, self.backward_idx = self._extend_datetime_index()
-        n_features = self.data_tensor.shape[1]
+        if not hasattr(self, 'scaler') or self.scaler is None:
+            raise RuntimeError("Скалер не инициализирован. Проверьте fit_timegan()")
 
+        # Получаем направление прогноза
+        direction = kwargs.get('direction', getattr(self, 'direction', 'forward'))
+        
+        model = self.model
+        
+        # Переводим все подсети в eval режим
+        model.nete.eval()
+        model.netr.eval()
+        model.netg.eval()
+        model.nets.eval()
+        
+        # Получаем расширенные индексы
+        df_extended, forward_idx, backward_idx = self._extend_datetime_index()
+        n_features = self.n_features
+        
         with torch.no_grad():
-            # Прогноз назад
+            # Получаем данные из модели
+            real_data = self.model.ori_data  # это может быть list или numpy array
+            
+            # Проверяем, что данные есть (правильная проверка для разных типов)
+            if real_data is None:
+                raise ValueError("Нет данных для прогнозирования: ori_data is None")
+            
+            # Преобразуем в список, если это numpy array
+            if isinstance(real_data, np.ndarray):
+                # Если real_data 3D array (num_samples, seq_len, n_features)
+                real_data = [real_data[i] for i in range(len(real_data))]
+            elif not isinstance(real_data, list):
+                raise TypeError(f"Неожиданный тип данных: {type(real_data)}")
+            
+            # Проверяем, что список не пустой
+            if len(real_data) == 0:
+                raise ValueError("Нет данных для прогнозирования: список последовательностей пуст")
+            
+            # Берем последнюю последовательность как контекст
+            context_seq = real_data[-1]  # shape: (seq_len, n_features)
+            
+            # Подготавливаем для каждого направления
             backward_arr = []
-            if self.backward_idx:
-                last_seq = self.data_tensor[:self.seq_len].unsqueeze(0)
-                H_last = embedder(last_seq)
-                next_hidden = H_last[:, :1, :]
-                for _ in range(len(self.backward_idx)):
-                    z = torch.randn(next_hidden.shape, device=self.device)
-                    h_next = generator(z)
-                    next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
-                    x_next = recovery(next_hidden)
-                    backward_arr.append(x_next.squeeze(0).squeeze(0).cpu().numpy())
-                backward_arr = np.stack(backward_arr[::-1], axis=0)
-            else:
-                backward_arr = np.empty((0, n_features))
-
-            # Прогноз вперёд
             forward_arr = []
-            if self.forward_idx:
-                last_seq = self.data_tensor[-self.seq_len:].unsqueeze(0)
-                H_last = embedder(last_seq)
-                next_hidden = H_last[:, -1:, :]
-                for _ in range(len(self.forward_idx)):
-                    z = torch.randn(next_hidden.shape, device=self.device)
-                    h_next = generator(z)
+            
+            # Прогноз назад (если нужно)
+            if direction in ["backward", "both"] and backward_idx:
+                context_tensor = torch.tensor(context_seq, dtype=torch.float32).to(self.device).unsqueeze(0)
+                
+                # Для backward прогноза
+                H_context = model.nete(context_tensor)
+                next_hidden = H_context[:, :1, :]  # первое скрытое состояние
+                
+                for _ in range(len(backward_idx)):
+                    z = torch.randn(1, 1, self.z_dim, device=self.device)
+                    h_next = model.netg(z)
                     next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
-                    x_next = recovery(next_hidden)
-                    forward_arr.append(x_next.squeeze(0).squeeze(0).cpu().numpy())
-                forward_arr = np.stack(forward_arr, axis=0)
+                    x_next = model.netr(next_hidden)
+                    backward_arr.append(x_next.squeeze().cpu().numpy())
+                
+                # Переворачиваем для правильного порядка времени
+                if backward_arr:
+                    backward_arr = np.stack(backward_arr[::-1], axis=0)
+                else:
+                    backward_arr = np.empty((0, n_features))
+            
+            # Прогноз вперед (если нужно)
+            if direction in ["forward", "both"] and forward_idx:
+                context_tensor = torch.tensor(context_seq, dtype=torch.float32).to(self.device).unsqueeze(0)
+                
+                # Для forward прогноза
+                H_context = model.nete(context_tensor)
+                next_hidden = H_context[:, -1:, :]  # последнее скрытое состояние
+                
+                for _ in range(len(forward_idx)):
+                    z = torch.randn(1, 1, self.z_dim, device=self.device)
+                    h_next = model.netg(z)
+                    next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
+                    x_next = model.netr(next_hidden)
+                    forward_arr.append(x_next.squeeze().cpu().numpy())
+                
+                if forward_arr:
+                    forward_arr = np.stack(forward_arr, axis=0)
+                else:
+                    forward_arr = np.empty((0, n_features))
+            
+            # Объединяем прогнозы в правильном порядке
+            if direction == "both":
+                # backward + forward
+                generated = np.vstack([backward_arr, forward_arr])
+                all_idx = backward_idx + forward_idx
+            elif direction == "backward":
+                generated = backward_arr
+                all_idx = backward_idx
+            else:  # forward
+                generated = forward_arr
+                all_idx = forward_idx
+            
+            # Проверяем, что есть данные для денормализации
+            if len(generated) > 0:
+                generated_original = self.scaler.inverse_transform(generated)
             else:
-                forward_arr = np.empty((0, n_features))
-
-            # Объединяем
-            generated = np.vstack([backward_arr, forward_arr])
-            generated_original = self.scaler.inverse_transform(generated)
-
-        df_extended.loc[self.backward_idx + self.forward_idx] = generated_original
-        full_df = df_extended.sort_index().T.copy()
-     #   self.df_updated = full_df.copy() 
-        df_scaled_new = self.scaler.fit_transform(full_df.T.values) 
-        self.data_tensor = torch.tensor(df_scaled_new, dtype=torch.float32).to(self.device)
-        extrapolated_df = pd.DataFrame(generated_original, index=self.backward_idx + self.forward_idx).T
-        if hasattr(self, 'selected_features') and self.selected_features:
+                generated_original = np.empty((0, n_features))
+        
+        # Обновляем DataFrame с прогнозами
+        for i, date in enumerate(all_idx):
+            if date in df_extended.index and i < len(generated_original):
+                df_extended.loc[date] = generated_original[i]
+        
+        # Создаем DataFrame с прогнозами для возврата
+        if len(generated_original) > 0:
+            extrapolated_df = pd.DataFrame(
+                generated_original, 
+                index=all_idx,
+                columns=[f'feature_{i}' for i in range(n_features)]
+            ).T
+        else:
+            extrapolated_df = pd.DataFrame(columns=all_idx)
+        
+        # Если у нас есть названия признаков из оригинального DataFrame
+        if hasattr(self, 'df_updated') and self.df_updated is not None:
+            # Берем имена строк из оригинального DataFrame
+            feature_names = self.df_updated.index.tolist()
+            if len(feature_names) == n_features and len(extrapolated_df) > 0:
+                extrapolated_df.index = feature_names
+        
+        # Фильтрация по selected_features
+        if hasattr(self, 'selected_features') and self.selected_features and len(extrapolated_df) > 0:
+            # Убедимся, что selected_features соответствуют индексам
             valid_features = [f for f in self.selected_features if f in extrapolated_df.index]
             if valid_features:
                 extrapolated_df = extrapolated_df.loc[valid_features]
+            else:
+                # Если нет совпадений, используем числовые индексы
+                try:
+                    valid_features = [f for f in self.selected_features if int(f) < n_features]
+                    if valid_features:
+                        extrapolated_df = extrapolated_df.iloc[valid_features]
+                except (ValueError, TypeError):
+                    pass
+        
+        # Сохраняем индексы
+        self.forward_idx = forward_idx
+        self.backward_idx = backward_idx
         
         return extrapolated_df
    
