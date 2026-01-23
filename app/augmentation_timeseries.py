@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Union
 from scipy.interpolate import PchipInterpolator, Akima1DInterpolator
+from statsmodels.tsa.statespace.structural import UnobservedComponents
 from scipy import signal
 from statsmodels.tsa.stattools import adfuller
 import pandas as pd
@@ -33,7 +34,7 @@ class AutoAugmentationTimeseries:
         self.hidden_dim = 24
         self.z_dim = self.df_input.shape[0]
         self.num_layers = 3
-        self.epochs = 350
+        self.epochs = 5000
         self.batch_size = 128
         self.alpha_teacher = 0.7
         self.beta1 = 0.9
@@ -50,7 +51,9 @@ class AutoAugmentationTimeseries:
         self.df_updated = self.df_input
         self.counter = 0
         self.resume = ''
-    
+        self.lstm_model = None
+        self.lstm_fitted = False
+
     def _load_and_standardize(self, df_or_path) -> pd.DataFrame:
        
         if isinstance(df_or_path, pd.DataFrame):
@@ -123,676 +126,161 @@ class AutoAugmentationTimeseries:
             "3) FACTORS в index, ДАТЫ в столбцах."
         )
 
-    def fit_timegan(self):
-        df = self.df_updated.T
-        df.index = pd.to_datetime(df.index)
-        numerator = df.values - np.min(df.values, axis=0)
-        denominator = np.max(df.values, axis=0) - np.min(df.values, axis=0)
-        norm_data = numerator / (denominator + 1e-7)
-        temp_data = []
-        seq_len = self.seq_len
-    
-        for i in range(0, len(norm_data) - seq_len):
-            sequence = norm_data[i:i + seq_len]
-            temp_data.append(sequence)
-        
-        idx = np.random.permutation(len(temp_data))
-        ori_data = []
-        for i in range(len(temp_data)):
-            ori_data.append(temp_data[idx[i]])
-        self.scaler = MinMaxScaler()
-        data_scaled = self.scaler.fit_transform(df.values)
-        self.data_tensor = torch.tensor(data_scaled, dtype=torch.float32).to(self.device)
-        self.data_tensor = self.data_tensor
-        self.n_features = df.shape[1]
-        z_dim = self.z_dim
-        hidden_dim = self.hidden_dim
-        num_layer = self.num_layers
-        batch_size = self.batch_size
-        iteration = self.epochs
-        beta1 = self.beta1
-        lr = self.lr
-        resume = self.resume
-        w_gamma= self.w_gamma
-        w_es = self.w_es
-        w_e0 = self.w_e0
-        w_g = self.w_g
-        isTrain = True
-        device = self.device
-
-        # Создание окон
-        def create_sequences(data, seq_len):
-            X = []
-            for i in range(len(data) - seq_len):
-                X.append(data[i:i + seq_len])
-            return torch.stack(X)
-        
-        def _weights_init(m):
-            classname = m.__class__.__name__
-            if isinstance(m, nn.Linear):
-                init.xavier_uniform_(m.weight)
-                m.bias.data.fill_(0)
-            elif classname.find('Conv') != -1:
-                m.weight.data.normal_(0.0, 0.02)
-            elif classname.find('Norm') != -1:
-                m.weight.data.normal_(1.0, 0.02)
-                m.bias.data.fill_(0)
-            elif classname.find("GRU") != -1:
-                for name,param in m.named_parameters():
-                    if 'weight_ih' in name:
-                        init.xavier_uniform_(param.data)
-                    elif 'weight_hh' in name:
-                        init.orthogonal_(param.data)
-                    elif 'bias' in name:
-                        param.data.fill_(0)
-
-        def batch_generator(data, time, batch_size):
-            no = len(data)
-            idx = np.random.permutation(no)
-            train_idx = idx[:batch_size]
-            X_mb = list(data[i] for i in train_idx)
-            T_mb = list(time[i] for i in train_idx)
-            return X_mb, T_mb
-
-        def extract_time (data):
-            time = list()
-            max_seq_len = 0
-            for i in range(len(data)):
-                max_seq_len = max(max_seq_len, len(data[i][:,0]))
-                time.append(len(data[i][:,0]))
-                
-            return time, max_seq_len
-
-        def random_generator (batch_size, z_dim, T_mb, max_seq_len):
-            Z_mb = list()
-            for i in range(batch_size):
-                temp = np.zeros([max_seq_len, z_dim])
-                temp_Z = np.random.uniform(0., 1, [T_mb[i], z_dim])
-                temp[:T_mb[i],:] = temp_Z
-                Z_mb.append(temp_Z)
-
-            return Z_mb
-
-        def NormMinMax(data):
-            min_val = np.min(np.min(data, axis=0), axis=0)
-            data = data - min_val
-            max_val = np.max(np.max(data, axis=0), axis=0)
-            norm_data = data / (max_val + 1e-7)
-            return norm_data, min_val, max_val
-
-        class Encoder(nn.Module):
-            def __init__(self):
-                super(Encoder, self).__init__()
-                self.rnn = nn.GRU(input_size=z_dim, hidden_size=hidden_dim, num_layers=num_layer)
-              # self.norm = nn.BatchNorm1d(hidden_dim)
-                self.fc = nn.Linear(hidden_dim, hidden_dim)
-                self.sigmoid = nn.Sigmoid()
-                self.apply(_weights_init)
-
-            def forward(self, input, sigmoid=True):
-                e_outputs, _ = self.rnn(input)
-                H = self.fc(e_outputs)
-                if sigmoid:
-                    H = self.sigmoid(H)
-                return H
-
-        class Recovery(nn.Module):
-            def __init__(self):
-                super(Recovery, self).__init__()
-                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=z_dim, num_layers=num_layer)
-             #  self.norm = nn.BatchNorm1d(z_dim)
-                self.fc = nn.Linear(z_dim, z_dim)
-                self.sigmoid = nn.Sigmoid()
-                self.apply(_weights_init)
-
-            def forward(self, input, sigmoid=True):
-                r_outputs, _ = self.rnn(input)
-                X_tilde = self.fc(r_outputs)
-                if sigmoid:
-                    X_tilde = self.sigmoid(X_tilde)
-                return X_tilde
-        
-        class Supervisor(nn.Module):
-            def __init__(self):
-                super(Supervisor, self).__init__()
-                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layer)
-            #   self.norm = nn.LayerNorm(hidden_dim)
-                self.fc = nn.Linear(hidden_dim, hidden_dim)
-                self.sigmoid = nn.Sigmoid()
-                self.apply(_weights_init)
-
-            def forward(self, input, sigmoid=True):
-                s_outputs, _ = self.rnn(input)
-            #   s_outputs = self.norm(s_outputs)
-                S = self.fc(s_outputs)
-                if sigmoid:
-                    S = self.sigmoid(S)
-                return S
-
-        class Generator(nn.Module):
-            def __init__(self):
-                super(Generator, self).__init__()
-                self.rnn = nn.GRU(input_size=z_dim, hidden_size=hidden_dim, num_layers=num_layer)
-            #   self.norm = nn.LayerNorm(hidden_dim)
-                self.fc = nn.Linear(hidden_dim, hidden_dim)
-                self.sigmoid = nn.Sigmoid()
-                self.apply(_weights_init)
-
-            def forward(self, input, sigmoid=True):
-                g_outputs, _ = self.rnn(input)
-            #   g_outputs = self.norm(g_outputs)
-                E = self.fc(g_outputs)
-                if sigmoid:
-                    E = self.sigmoid(E)
-                return E
-        
-        class Discriminator(nn.Module):
-            def __init__(self):
-                super(Discriminator, self).__init__()
-                self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layer)
-            #   self.norm = nn.LayerNorm(hidden_dim)
-                self.fc = nn.Linear(hidden_dim, hidden_dim)
-                self.sigmoid = nn.Sigmoid()
-                self.apply(_weights_init)
-
-            def forward(self, input, sigmoid=True):
-                d_outputs, _ = self.rnn(input)
-                Y_hat = self.fc(d_outputs)
-                if sigmoid:
-                    Y_hat = self.sigmoid(Y_hat)
-                return Y_hat
-        
-        class BaseModel():
-            def __init__(self, ori_data):
-                self.seed(-1)
-                self.ori_data, self.min_val, self.max_val = NormMinMax(ori_data)
-                self.ori_time, self.max_seq_len = extract_time(ori_data)
-                self.data_num, _, _ = np.asarray(ori_data).shape  
-                self.trn_dir = os.path.join('./output', 'experiment_name', 'train')
-                self.tst_dir = os.path.join('./output' 'experiment_name', 'test')
-                self.device = torch.device("cpu")
-
-            def seed(self, seed_value):
-                if seed_value == -1:
-                    return
-
-                random.seed(seed_value)
-                torch.manual_seed(seed_value)
-                torch.cuda.manual_seed_all(seed_value)
-                np.random.seed(seed_value)
-                torch.backends.cudnn.deterministic = True
-
-            def save_weights(self, epoch):
-                weight_dir = os.path.join('./output', 'experiment_name', 'train', 'weights')
-                if not os.path.exists(weight_dir): 
-                    os.makedirs(weight_dir)
-
-                torch.save({'epoch': epoch + 1, 'state_dict': self.nete.state_dict()},
-                            '%s/netE.pth' % (weight_dir))
-                torch.save({'epoch': epoch + 1, 'state_dict': self.netr.state_dict()},
-                            '%s/netR.pth' % (weight_dir))
-                torch.save({'epoch': epoch + 1, 'state_dict': self.netg.state_dict()},
-                            '%s/netG.pth' % (weight_dir))
-                torch.save({'epoch': epoch + 1, 'state_dict': self.netd.state_dict()},
-                            '%s/netD.pth' % (weight_dir))
-                torch.save({'epoch': epoch + 1, 'state_dict': self.nets.state_dict()},
-                            '%s/netS.pth' % (weight_dir))
-
-            def train_one_iter_er(self):
-                self.nete.train()
-                self.netr.train()
-                # set mini-batch
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-                # train encoder & decoder
-                self.optimize_params_er()
-
-            def train_one_iter_er_(self):
-                self.nete.train()
-                self.netr.train()
-                # set mini-batch
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-                # train encoder & decoder
-                self.optimize_params_er_()
-            
-            def train_one_iter_s(self):
-                #self.nete.eval()
-                self.nets.train()
-                # set mini-batch
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-                # train superviser
-                self.optimize_params_s()
-
-            def train_one_iter_g(self):
-                self.netg.train()
-                # set mini-batch
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-                self.Z = random_generator(batch_size, z_dim, self.T, self.max_seq_len)
-                # train superviser
-                self.optimize_params_g()
-
-            def train_one_iter_d(self):
-                self.netd.train()
-                # set mini-batch
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-                self.Z = random_generator(batch_size, z_dim, self.T, self.max_seq_len)
-                # train superviser
-                self.optimize_params_d()
-
-            def train(self):
-                for iter in range(iteration):
-                # Train for one iter
-                    self.train_one_iter_er()
-                    print('Encoder training step: '+ str(iter) + '/' + str(iteration))
-
-                for iter in range(iteration):
-                # Train for one iter
-                    self.train_one_iter_s()
-                    print('Superviser training step: '+ str(iter) + '/' + str(iteration))
-
-                for iter in range(iteration):
-                # Train for one iter
-                    for kk in range(2):
-                        self.train_one_iter_g()
-                        self.train_one_iter_er_()
-
-                    self.train_one_iter_d()
-                    print('Superviser training step: '+ str(iter) + '/' + str(iteration))
-
-                self.save_weights(iteration)
-                self.generated_data = self.generation(batch_size)
-                print('Finish Synthetic Data Generation')
-
-            def generation(self, num_samples, mean = 0.0, std = 1.0):
-                if num_samples == 0:
-                    return None, None
-                ## Synthetic data generation
-                self.X0, self.T = batch_generator(self.ori_data, self.ori_time, batch_size)
-                self.Z = random_generator(num_samples, z_dim, self.T, self.max_seq_len)
-                self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
-                self.E_hat = self.netg(self.Z)    
-                self.H_hat = self.nets(self.E_hat)  
-                generated_data_curr = self.netr(self.H_hat).cpu().detach().numpy()  
-                generated_data = list()
-                for i in range(num_samples):
-                    temp = generated_data_curr[i, :self.ori_time[i], :]
-                    generated_data.append(temp)
-                
-                # Renormalization
-                generated_data = generated_data * self.max_val
-                generated_data = generated_data + self.min_val
-                return generated_data
-            
-        class TimeGAN(BaseModel):
-            @property
-            def name(self):
-                return 'TimeGAN'
-
-            def __init__(self, ori_data):
-                super(TimeGAN, self).__init__(ori_data)
-                # -- Misc attributes
-                self.epoch = 0
-                self.times = []
-                self.total_steps = 0
-                # Create and initialize networks.
-                self.nete = Encoder().to(device)
-                self.netr = Recovery().to(device)
-                self.netg = Generator().to(device)
-                self.netd = Discriminator().to(device)
-                self.nets = Supervisor().to(device)
-
-                if resume != '':
-                    print("\nLoading pre-trained networks.")
-                    self.iter = torch.load(os.path.join(resume, 'netG.pth'))['epoch']
-                    self.nete.load_state_dict(torch.load(os.path.join(resume, 'netE.pth'))['state_dict'])
-                    self.netr.load_state_dict(torch.load(os.path.join(resume, 'netR.pth'))['state_dict'])
-                    self.netg.load_state_dict(torch.load(os.path.join(resume, 'netG.pth'))['state_dict'])
-                    self.netd.load_state_dict(torch.load(os.path.join(resume, 'netD.pth'))['state_dict'])
-                    self.nets.load_state_dict(torch.load(os.path.join(resume, 'netS.pth'))['state_dict'])
-                    print("\tDone.\n")
-
-               # loss
-                self.l_mse = nn.MSELoss()
-                self.l_r = nn.L1Loss()
-                self.l_bce = nn.BCELoss()
-
-                # Setup optimizer
-                if isTrain:
-                    self.nete.train()
-                    self.netr.train()
-                    self.netg.train()
-                    self.netd.train()
-                    self.nets.train()
-                    self.optimizer_e = optim.Adam(self.nete.parameters(), lr=lr, betas=(beta1, 0.999))
-                    self.optimizer_r = optim.Adam(self.netr.parameters(), lr=lr, betas=(beta1, 0.999))
-                    self.optimizer_g = optim.Adam(self.netg.parameters(), lr=lr, betas=(beta1, 0.999))
-                    self.optimizer_d = optim.Adam(self.netd.parameters(), lr=lr, betas=(beta1, 0.999))
-                    self.optimizer_s = optim.Adam(self.nets.parameters(), lr=lr, betas=(beta1, 0.999))
-
-            def forward_e(self):
-                self.H = self.nete(self.X)
-
-            def forward_er(self):
-                self.H = self.nete(self.X)
-                self.X_tilde = self.netr(self.H)
-
-            def forward_g(self):
-                self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
-                self.E_hat = self.netg(self.Z)
-
-            def forward_dg(self):
-                self.Y_fake = self.netd(self.H_hat)
-                self.Y_fake_e = self.netd(self.E_hat)
-
-            def forward_rg(self):
-                self.X_hat = self.netr(self.H_hat)
-
-            def forward_s(self):
-                self.H_supervise = self.nets(self.H)
-
-            def forward_sg(self):
-                self.H_hat = self.nets(self.E_hat)
-
-            def forward_d(self):
-              
-                self.Y_real = self.netd(self.H)
-                self.Y_fake = self.netd(self.H_hat)
-                self.Y_fake_e = self.netd(self.E_hat)
-
-            def backward_er(self):
-                self.err_er = self.l_mse(self.X_tilde, self.X)
-                self.err_er.backward(retain_graph=True)
-                print("Loss: ", self.err_er)
-
-            def backward_er_(self):
-                self.err_er_ = self.l_mse(self.X_tilde, self.X) 
-                self.err_s = self.l_mse(self.H_supervise[:,:-1,:], self.H[:,1:,:])
-                self.err_er = 10 * torch.sqrt(self.err_er_) + 0.1 * self.err_s
-                self.err_er.backward(retain_graph=True)
-
-            def backward_g(self):
-                self.err_g_U = self.l_bce(self.Y_fake, torch.ones_like(self.Y_fake))
-                self.err_g_U_e = self.l_bce(self.Y_fake_e, torch.ones_like(self.Y_fake_e))
-                self.err_g_V1 = torch.mean(torch.abs(torch.sqrt(torch.std(self.X_hat,[0])[1] + 1e-6) - torch.sqrt(torch.std(self.X,[0])[1] + 1e-6)))   # |a^2 - b^2|
-                self.err_g_V2 = torch.mean(torch.abs((torch.mean(self.X_hat,[0])[0]) - (torch.mean(self.X,[0])[0])))  # |a - b|
-                self.err_s = self.l_mse(self.H_supervise[:,:-1,:], self.H[:,1:,:])
-                self.err_g = self.err_g_U + \
-                            self.err_g_U_e * w_gamma + \
-                            self.err_g_V1 * w_g + \
-                            self.err_g_V2 * w_g + \
-                            torch.sqrt(self.err_s) 
-                self.err_g.backward(retain_graph=True)
-                print("Loss G: ", self.err_g)
-
-            def backward_s(self):
-                self.err_s = self.l_mse(self.H[:,1:,:], self.H_supervise[:,:-1,:])
-                self.err_s.backward(retain_graph=True)
-                print("Loss S: ", self.err_s)
-
-            def backward_d(self):
-                self.err_d_real = self.l_bce(self.Y_real, torch.ones_like(self.Y_real))
-                self.err_d_fake = self.l_bce(self.Y_fake, torch.zeros_like(self.Y_fake))
-                self.err_d_fake_e = self.l_bce(self.Y_fake_e, torch.zeros_like(self.Y_fake_e))
-                self.err_d = self.err_d_real + \
-                            self.err_d_fake + \
-                            self.err_d_fake_e * w_gamma
-                if self.err_d > 0.15:
-                    self.err_d.backward(retain_graph=True)
-
-            def optimize_params_er(self):
-                # Forward-pass
-                self.forward_er()
-                # Backward-pass
-                # nete & netr
-                self.optimizer_e.zero_grad()
-                self.optimizer_r.zero_grad()
-                self.backward_er()
-                self.optimizer_e.step()
-                self.optimizer_r.step()
-
-            def optimize_params_er_(self):
-                # Forward-pass
-                self.forward_er()
-                self.forward_s()
-                # Backward-pass
-                # nete & netr
-                self.optimizer_e.zero_grad()
-                self.optimizer_r.zero_grad()
-                self.backward_er_()
-                self.optimizer_e.step()
-                self.optimizer_r.step()
-
-            def optimize_params_s(self):
-                # Forward-pass
-                self.forward_e()
-                self.forward_s()
-                # Backward-pass
-                # nets
-                self.optimizer_s.zero_grad()
-                self.backward_s()
-                self.optimizer_s.step()
-
-            def optimize_params_g(self):
-                # Forward-pass
-                self.forward_e()
-                self.forward_s()
-                self.forward_g()
-                self.forward_sg()
-                self.forward_rg()
-                self.forward_dg()
-
-                # Backward-pass
-                # nets
-                self.optimizer_g.zero_grad()
-                self.optimizer_s.zero_grad()
-                self.backward_g()
-                self.optimizer_g.step()
-                self.optimizer_s.step()
-
-            def optimize_params_d(self):
-                # Forward-pass
-                self.forward_e()
-                self.forward_g()
-                self.forward_sg()
-                self.forward_d()
-                self.forward_dg()
-
-                # Backward-pass
-                # nets
-                self.optimizer_d.zero_grad()
-                self.backward_d()
-                self.optimizer_d.step()
-        
-        self.model = TimeGAN(ori_data)
-        self.model.train()   
-    #    self.model = (embedder, recovery, generator, supervisor, discriminator)
-    
-    def _extend_datetime_index(self):
-        if not isinstance(self.df_updated.T.index, pd.DatetimeIndex) or len(self.df_updated.T.index) < 2:
-            raise ValueError("Индекс должен быть DatetimeIndex с >=2 элементов")
+    def _extend_datetime_index(self, direction=None):
+        if not isinstance(self.df_updated.T.index, pd.DatetimeIndex):
+            raise ValueError("Индекс должен быть DatetimeIndex")
 
         df_extended = self.df_updated.T.copy()
-        step = self.df_updated.T.index[1] - self.df_updated.T.index[0]
-        
-        # Используем self.direction для определения количества шагов
-        direction = getattr(self, 'direction', 'forward')
-        pred_len = getattr(self, 'pred_len', 10)  # значение по умолчанию
-        
-        # Forward индексы
-        forward_idx = []
-        if direction in ["forward", "both"]:
-            last_idx = df_extended.index[-1]
-            n_forward = pred_len if direction == "forward" else pred_len // 2 + pred_len % 2
-            forward_idx = [last_idx + step*(i+1) for i in range(int(n_forward))]
-        
-        # Backward индексы
-        backward_idx = []
-        if direction in ["backward", "both"]:
-            first_idx = df_extended.index[0]
-            n_backward = pred_len if direction == "backward" else pred_len // 2
-            backward_idx = [first_idx - step*(i+1) for i in reversed(range(int(n_backward)))]
+        df_extended = df_extended.sort_index()
 
-        # Расширяем df, чтобы можно было вставить прогнозы
-        for idx in backward_idx + forward_idx:
-            if idx not in df_extended.index:
-                df_extended.loc[idx] = np.nan
+        step = df_extended.index[1] - df_extended.index[0]
+        pred_len = getattr(self, 'pred_len', 10)
 
+        if direction is None:
+            direction = getattr(self, 'direction', 'forward')
+
+        if direction == "forward":
+            n_forward, n_backward = pred_len, 0
+        elif direction == "backward":
+            n_forward, n_backward = 0, pred_len
+        else:  # both
+            n_forward = int(np.ceil(pred_len / 2))
+            n_backward = int(np.floor(pred_len / 2))
+
+        last_dt = df_extended.index[-1]
+        forward_idx = [
+            last_dt + step * (i + 1)
+            for i in range(n_forward)
+        ]
+
+        first_dt = df_extended.index[0]
+        backward_idx = [
+            first_dt - step * (i + 1)
+            for i in range(n_backward)
+        ][::-1]  # от старых к новым
+
+        all_new_idx = backward_idx + forward_idx
+        if all_new_idx:
+            new_index = df_extended.index.union(all_new_idx)
+            df_extended = df_extended.reindex(new_index)
+
+        df_extended = df_extended.sort_index(ascending=True, inplace=False)
+  
         return df_extended, forward_idx, backward_idx
 
-    def predict_timegan(self, **kwargs):
-        if self.model is None:
-            raise RuntimeError("Модель TimeGAN не обучена. Сначала вызови fit_timegan()")
+    class _LSTM(torch.nn.Module):
+        def __init__(self, input_dim, hidden_dim, num_layers):
+            super().__init__()
+            self.lstm = torch.nn.LSTM(
+                input_dim,
+                hidden_dim,
+                num_layers=num_layers,
+                batch_first=True
+            )
+            self.fc = torch.nn.Linear(hidden_dim, input_dim)
 
-        if not hasattr(self, 'scaler') or self.scaler is None:
-            raise RuntimeError("Скалер не инициализирован. Проверьте fit_timegan()")
+        def forward(self, x, hidden=None):
+            out, hidden = self.lstm(x, hidden)
+            out = self.fc(out)
+            return out, hidden
 
-        # Получаем направление прогноза
-        direction = kwargs.get('direction', getattr(self, 'direction', 'forward'))
-        
-        model = self.model
-        
-        # Переводим все подсети в eval режим
-        model.nete.eval()
-        model.netr.eval()
-        model.netg.eval()
-        model.nets.eval()
-        
-        # Получаем расширенные индексы
-        df_extended, forward_idx, backward_idx = self._extend_datetime_index()
-        n_features = self.n_features
-        
+    def fit_lstm(self):
+        df = self.df_updated.T.copy()
+        df = df.sort_index()
+
+        values = df.values.astype(np.float32)
+        T, n_features = values.shape
+
+        from sklearn.preprocessing import StandardScaler
+        self.scaler = StandardScaler()
+        values = self.scaler.fit_transform(values)
+
+        X, y = [], []
+        for i in range(T - self.seq_len):
+            X.append(values[i:i + self.seq_len])
+            y.append(values[i + 1:i + self.seq_len + 1])
+
+        X = torch.tensor(np.array(X), device=self.device)
+        y = torch.tensor(np.array(y), device=self.device)
+
+        self.lstm_model = torch.nn.LSTM(
+            input_size=n_features,
+            hidden_size=self.hidden_dim,
+            num_layers=self.num_layers,
+            batch_first=True
+        ).to(self.device)
+
+        self.lstm_head = torch.nn.Linear(
+            self.hidden_dim, n_features
+        ).to(self.device)
+
+        params = list(self.lstm_model.parameters()) + list(self.lstm_head.parameters())
+        optimizer = torch.optim.Adam(params, lr=self.lr)
+        loss_fn = torch.nn.MSELoss()
+
+        self.lstm_model.train()
+        self.lstm_head.train()
+
+        for _ in range(self.epochs):
+            optimizer.zero_grad()
+            out, _ = self.lstm_model(X)
+            out = self.lstm_head(out)
+            loss = loss_fn(out, y)
+            loss.backward()
+            optimizer.step()
+
+        self.lstm_fitted = True
+
+    def _lstm_generate(self, context, steps):
+        self.lstm_model.eval()
+        self.lstm_head.eval()
+
         with torch.no_grad():
-            # Получаем данные из модели
-            real_data = self.model.ori_data  # это может быть list или numpy array
-            
-            # Проверяем, что данные есть (правильная проверка для разных типов)
-            if real_data is None:
-                raise ValueError("Нет данных для прогнозирования: ori_data is None")
-            
-            # Преобразуем в список, если это numpy array
-            if isinstance(real_data, np.ndarray):
-                # Если real_data 3D array (num_samples, seq_len, n_features)
-                real_data = [real_data[i] for i in range(len(real_data))]
-            elif not isinstance(real_data, list):
-                raise TypeError(f"Неожиданный тип данных: {type(real_data)}")
-            
-            # Проверяем, что список не пустой
-            if len(real_data) == 0:
-                raise ValueError("Нет данных для прогнозирования: список последовательностей пуст")
-            
-            # Берем последнюю последовательность как контекст
-            context_seq = real_data[-1]  # shape: (seq_len, n_features)
-            
-            # Подготавливаем для каждого направления
-            backward_arr = []
-            forward_arr = []
-            
-            # Прогноз назад (если нужно)
-            if direction in ["backward", "both"] and backward_idx:
-                context_tensor = torch.tensor(context_seq, dtype=torch.float32).to(self.device).unsqueeze(0)
-                
-                # Для backward прогноза
-                H_context = model.nete(context_tensor)
-                next_hidden = H_context[:, :1, :]  # первое скрытое состояние
-                
-                for _ in range(len(backward_idx)):
-                    z = torch.randn(1, 1, self.z_dim, device=self.device)
-                    h_next = model.netg(z)
-                    next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
-                    x_next = model.netr(next_hidden)
-                    backward_arr.append(x_next.squeeze().cpu().numpy())
-                
-                # Переворачиваем для правильного порядка времени
-                if backward_arr:
-                    backward_arr = np.stack(backward_arr[::-1], axis=0)
-                else:
-                    backward_arr = np.empty((0, n_features))
-            
-            # Прогноз вперед (если нужно)
-            if direction in ["forward", "both"] and forward_idx:
-                context_tensor = torch.tensor(context_seq, dtype=torch.float32).to(self.device).unsqueeze(0)
-                
-                # Для forward прогноза
-                H_context = model.nete(context_tensor)
-                next_hidden = H_context[:, -1:, :]  # последнее скрытое состояние
-                
-                for _ in range(len(forward_idx)):
-                    z = torch.randn(1, 1, self.z_dim, device=self.device)
-                    h_next = model.netg(z)
-                    next_hidden = self.alpha_teacher * next_hidden + (1 - self.alpha_teacher) * h_next
-                    x_next = model.netr(next_hidden)
-                    forward_arr.append(x_next.squeeze().cpu().numpy())
-                
-                if forward_arr:
-                    forward_arr = np.stack(forward_arr, axis=0)
-                else:
-                    forward_arr = np.empty((0, n_features))
-            
-            # Объединяем прогнозы в правильном порядке
-            if direction == "both":
-                # backward + forward
-                generated = np.vstack([backward_arr, forward_arr])
-                all_idx = backward_idx + forward_idx
-            elif direction == "backward":
-                generated = backward_arr
-                all_idx = backward_idx
-            else:  # forward
-                generated = forward_arr
-                all_idx = forward_idx
-            
-            # Проверяем, что есть данные для денормализации
-            if len(generated) > 0:
-                generated_original = self.scaler.inverse_transform(generated)
-            else:
-                generated_original = np.empty((0, n_features))
-        
-        # Обновляем DataFrame с прогнозами
-        for i, date in enumerate(all_idx):
-            if date in df_extended.index and i < len(generated_original):
-                df_extended.loc[date] = generated_original[i]
-        
-        # Создаем DataFrame с прогнозами для возврата
-        if len(generated_original) > 0:
-            extrapolated_df = pd.DataFrame(
-                generated_original, 
-                index=all_idx,
-                columns=[f'feature_{i}' for i in range(n_features)]
-            ).T
-        else:
-            extrapolated_df = pd.DataFrame(columns=all_idx)
-        
-        # Если у нас есть названия признаков из оригинального DataFrame
-        if hasattr(self, 'df_updated') and self.df_updated is not None:
-            # Берем имена строк из оригинального DataFrame
-            feature_names = self.df_updated.index.tolist()
-            if len(feature_names) == n_features and len(extrapolated_df) > 0:
-                extrapolated_df.index = feature_names
-        
-        # Фильтрация по selected_features
-        if hasattr(self, 'selected_features') and self.selected_features and len(extrapolated_df) > 0:
-            # Убедимся, что selected_features соответствуют индексам
-            valid_features = [f for f in self.selected_features if f in extrapolated_df.index]
-            if valid_features:
-                extrapolated_df = extrapolated_df.loc[valid_features]
-            else:
-                # Если нет совпадений, используем числовые индексы
-                try:
-                    valid_features = [f for f in self.selected_features if int(f) < n_features]
-                    if valid_features:
-                        extrapolated_df = extrapolated_df.iloc[valid_features]
-                except (ValueError, TypeError):
-                    pass
-        
-        # Сохраняем индексы
-        self.forward_idx = forward_idx
-        self.backward_idx = backward_idx
-        
-        return extrapolated_df
-   
+            context = torch.tensor(
+                context, dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
+
+            hidden = None
+            result = []
+
+            for _ in range(steps):
+                out, hidden = self.lstm_model(context, hidden)
+                next_step = self.lstm_head(out[:, -1:, :])
+                result.append(
+                    next_step.squeeze(0).squeeze(0).cpu().numpy()
+                )
+                context = torch.cat([context[:, 1:], next_step], dim=1)
+
+        return np.array(result)
+
+    def predict_lstm(self, direction="forward"):
+        if not self.lstm_fitted:
+            raise RuntimeError("LSTM не обучена")
+
+        df = self.df_updated.T.copy().sort_index()
+        values = self.scaler.transform(df.values.astype(np.float32))
+        df_ext, forward_idx, backward_idx = self._extend_datetime_index(direction=direction)
+
+        if direction in ("backward", "both") and backward_idx:
+            values_rev = values[::-1].copy()
+            ctx = values_rev[-self.seq_len:]
+
+            gen_bwd = self._lstm_generate(ctx, len(backward_idx))
+            gen_bwd = self.scaler.inverse_transform(gen_bwd)
+
+            for i, dt in enumerate(backward_idx):
+                df_ext.loc[dt] = gen_bwd[i]
+
+        if direction in ("forward", "both") and forward_idx:
+            ctx = values[-self.seq_len:]
+            gen_fwd = self._lstm_generate(ctx, len(forward_idx))
+            gen_fwd = self.scaler.inverse_transform(gen_fwd)
+
+            for i, dt in enumerate(forward_idx):
+                df_ext.loc[dt] = gen_fwd[i]
+
+        return df_ext.T.sort_index(axis=1)
+
     @staticmethod
     def _check_stationarity(series: pd.Series) -> Dict[str, Optional[Union[str, float]]]:
         series_clean = series.dropna()
@@ -1436,7 +924,6 @@ class AutoAugmentationTimeseries:
         self.df_updated = df_result.copy()
         return df_result
 
-
     def calculate_statistics_modified(self, df_modified: pd.DataFrame) -> Dict:
      
         stats_all = {}
@@ -1505,60 +992,13 @@ class AutoAugmentationTimeseries:
 
         elif action == "extrapolate":
             if self.counter == 0:
-                
                 self.counter += 1
-                self.fit_timegan(**kwargs)
-                self.direction = method
-                all_dates = pd.to_datetime(df_modified.columns)
-                if method in ["forward", "both"]:
+                self.fit_lstm(**kwargs)
 
-                    last_date = all_dates.max()
-                    existing_future_dates = [d for d in all_dates if d > last_date]
-                    if existing_future_dates:
-
-                        df_selected = _filter_selected(df_modified.copy())
-                        for idx in df_selected.index:
-                            row_series = df_selected.loc[idx]
-                            nan_in_extrapolated = row_series[existing_future_dates].isna()
-                            if nan_in_extrapolated.any():
-                
-                                last_valid_idx = row_series[:last_date].last_valid_index()
-                                if last_valid_idx:
-                                    last_valid_value = row_series[last_valid_idx]
-                                    df_modified.loc[idx, nan_in_extrapolated[nan_in_extrapolated].index] = last_valid_value
-                
-                if method in ["backward", "both"]:
-                    first_date = all_dates.min()
-                    existing_past_dates = [d for d in all_dates if d < first_date]
-                    
-                    if existing_past_dates:
-                        df_selected = _filter_selected(df_modified.copy())
-                        for idx in df_selected.index:
-                            row_series = df_selected.loc[idx]
-                            nan_in_extrapolated = row_series[existing_past_dates].isna()
-                            
-                            if nan_in_extrapolated.any():
-                                first_valid_idx = row_series[first_date:].first_valid_index()
-                                if first_valid_idx:
-                                    first_valid_value = row_series[first_valid_idx]
-                                    df_modified.loc[idx, nan_in_extrapolated[nan_in_extrapolated].index] = first_valid_value
-                
-                df_extrapolated = self.predict_timegan(**kwargs)
-                
-                for idx in df_extrapolated.index:
-                    for date in df_extrapolated.columns:
-                        if date in df_modified.columns:
-                            if pd.isna(df_modified.at[idx, date]):
-                                df_modified.at[idx, date] = df_extrapolated.at[idx, date]
-                            elif idx in (self.selected_features or []):
-                                df_modified.at[idx, date] = df_extrapolated.at[idx, date]
-                        else:
-                            if date not in df_modified.columns:
-                                df_modified[date] = np.nan
-                            df_modified.at[idx, date] = df_extrapolated.at[idx, date]
-            
-                df_modified = df_modified.reindex(sorted(df_modified.columns), axis=1)
-                self.df_updated = df_modified.copy()
+            self.direction = method
+            df_extrapolated = self.predict_lstm(direction=method)
+            self.df_updated = df_extrapolated.copy()
+            df_modified = df_extrapolated.copy()
 
         stats_df = pd.DataFrame.from_dict(self.calculate_statistics_modified(df_modified), orient='index')
         result_html["df_modified_html"] = df_modified.to_html(classes="dataframe table table-sm", border=0)
