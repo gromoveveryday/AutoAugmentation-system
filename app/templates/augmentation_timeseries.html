@@ -28,6 +28,13 @@
             font-weight: 600;
         }
 
+        h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin: 15px 0 10px 0;
+            color: #444;
+        }
+
         form {
             display: flex;
             gap: 10px;
@@ -160,6 +167,57 @@
 
         .reset-button:hover {
             background-color: #d32f2f !important;
+        }
+
+        /* Стили для блока настраиваемых параметров (под кнопкой) */
+        .custom-params-section {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 5px;
+            border: 1px solid #e0e0e0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .custom-params-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2c3e50;
+            margin: 0 0 15px 0;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #4CAF50;
+        }
+
+        .params-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .param-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            padding: 6px 0;
+            border-bottom: 1px dashed #eaeaea;
+        }
+
+        .param-label {
+            color: #555;
+            flex: 1;
+            padding-right: 10px;
+        }
+
+        .param-value {
+            font-weight: 600;
+            color: #2c3e50;
+            background: #f8f9fa;
+            padding: 3px 10px;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+            min-width: 50px;
+            text-align: center;
         }
 
         .table-container {
@@ -399,9 +457,11 @@
             </div>
 
 
-            <!-- Шум -->
+            <!-- Шум (только кнопка, меню отдельно) -->
+            <button class="augmentation-button" onclick="toggleMenu(this,'noise-menu')">Добавление шума</button>
+            
+            <!-- Выпадающее меню для методов шума -->
             <div class="menu-container">
-                <button class="augmentation-button" onclick="toggleMenu(this,'noise-menu')">Добавление шума</button>
                 <div class="noise-menu" id="noise-menu" style="width:440px;">
                     <div class="menu-title">Методы добавления шума</div>
 
@@ -436,6 +496,48 @@
                 </div>
             </div>
 
+            <!-- Блок настраиваемых параметров (под кнопкой Добавление шума) -->
+            <div class="custom-params-section">
+                <div class="custom-params-title">Настраиваемые параметры</div>
+                <div class="params-grid">
+                    <div class="param-item">
+                        <span class="param-label">Процент ряда для валидации автоматической интерполяции:</span>
+                        <span class="param-value">30</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Уровень шума:</span>
+                        <span class="param-value">0,1</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Доля данных преобразования в выбросы:</span>
+                        <span class="param-value">0,01</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Количество стандартных отклонений для формирования выброса:</span>
+                        <span class="param-value">5</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Вероятность состояния зашумленности при марковском шуме:</span>
+                        <span class="param-value">0,5</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Мат. ожидание экспоненциального распределения:</span>
+                        <span class="param-value">0,1</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Размер окна для обучения модели экстраполяции:</span>
+                        <span class="param-value">24</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Количество скрытых слоев модели экстраполяции:</span>
+                        <span class="param-value">3</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">Количество эпох обучения модели экстраполяции:</span>
+                        <span class="param-value">1000</span>
+                    </div>
+                </div>
+            </div>
 
         </div>
     </div>

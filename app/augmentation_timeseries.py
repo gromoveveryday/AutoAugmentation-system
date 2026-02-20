@@ -1,15 +1,11 @@
 from typing import Optional, Dict, Union
 from scipy.interpolate import PchipInterpolator, Akima1DInterpolator
-from statsmodels.tsa.statespace.structural import UnobservedComponents
 from scipy import signal
 from statsmodels.tsa.stattools import adfuller
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.init as init
-import torch.optim as optim
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 import os
 import warnings
 import random
@@ -190,8 +186,6 @@ class AutoAugmentationTimeseries:
 
         values = df.values.astype(np.float32)
         T, n_features = values.shape
-
-        from sklearn.preprocessing import StandardScaler
         self.scaler = StandardScaler()
         values = self.scaler.fit_transform(values)
 
@@ -211,7 +205,7 @@ class AutoAugmentationTimeseries:
         ).to(self.device)
 
         self.lstm_head = torch.nn.Linear(
-            self.hidden_dim, n_features
+            self.hidden_dim, n_features 
         ).to(self.device)
 
         params = list(self.lstm_model.parameters()) + list(self.lstm_head.parameters())
